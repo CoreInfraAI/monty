@@ -36,6 +36,13 @@ These raise `NameError`:
 
 ## Behavioural divergences
 
+- **No `__class__` on builtin values** — `[].__class__`, `list.__class__` and
+    `list[int].__class__` raise `AttributeError`; only instances of Monty classes
+    carry it (see [classes.md](classes.md)). Use `type(x)`.
+- **Builtin methods are call-only** — reading one without calling it raises
+    `AttributeError`, so `[1].append`, `'a'.upper`, `{}.get`, `dict.fromkeys`
+    and `list.__class_getitem__` cannot be assigned, passed as a callback or
+    reached through `getattr`. Call them directly (`list.__class_getitem__(int)`).
 - **`repr` of a dict being mutated by its own elements** — Monty iterates the
     live entries like CPython, but deletion compacts Monty's dense entry storage
     where CPython leaves a tombstone in place: a key deleted from inside a user
@@ -94,8 +101,9 @@ These raise `NameError`:
     `OverflowError: cannot fit 'int' into an index-sized integer`.
 - **`isinstance(obj, T)`** — `T` must be a built-in type (`int`, `str`,
     `list`, ...), a built-in exception class, a sandbox-defined class (see
-    [classes.md](classes.md)), or a tuple of those. Passing a host-supplied
-    dataclass / namedtuple as the second argument raises `TypeError`.
+    [classes.md](classes.md)), a `|` union of those (see [typing.md](typing.md)),
+    or a tuple of those. Passing a host-supplied dataclass / namedtuple as the
+    second argument raises `TypeError`.
 - **`iter()`** — see [iter.md](iter.md) for iterator and `iter(callable, sentinel)` divergences.
 - **`pow(base, exp, mod)`** — the three-argument form requires all integers and
     rejects negative exponents with `ValueError` instead of computing a modular

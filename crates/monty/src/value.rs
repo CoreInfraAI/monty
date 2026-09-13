@@ -25,7 +25,8 @@ use crate::{
     percent_format::{copy_bytes_template, percent_format, percent_format_bytes},
     resource_checks::check_pow_size,
     types::{
-        Bytes, BytesIterator, CmpOrder, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
+        Bytes, BytesIterator, CmpOrder, GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
+        Union,
         bytes::{bytes_contains, bytes_repr_fmt, concat_bytes, get_byte_at_index, repeat_bytes},
         host_class_type,
         instance::{instance_dataclass_eq, instance_getattr, instance_str, instance_user_eq},
@@ -1141,6 +1142,11 @@ impl<'h> PyTrait<'h> for Value {
             Ok(Some(Self::Int(lhs | rhs)))
         } else if let Self::Ref(id) = self {
             vm.heap.read(*id).py_or_impl(other, vm)
+        } else if matches!(self, Self::Builtin(_) | Self::None | Self::Marker(_)) {
+            // `int | None` and the other unions with an immediate left operand;
+            // class objects, aliases and unions dispatch through their own
+            // `py_or_impl`, so other heap receivers never reach this check.
+            Union::try_or(self, other, vm)
         } else {
             Ok(None)
         }
@@ -1150,6 +1156,10 @@ impl<'h> PyTrait<'h> for Value {
     fn py_ror_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         if let Self::Ref(id) = self {
             vm.heap.read(*id).py_ror_impl(other, vm)
+        } else if matches!(self, Self::Builtin(_) | Self::None | Self::Marker(_)) {
+            // `None | int`: the left operand has no `|` of its own, so the
+            // union forms on the reflected path, in source order.
+            Union::try_or(other, self, vm)
         } else {
             Ok(None)
         }
@@ -1282,6 +1292,25 @@ impl<'h> PyTrait<'h> for Value {
                 let bytes = interns.get_bytes(*bytes_id);
                 let byte = get_byte_at_index(bytes, index).ok_or_else(ExcType::bytes_index_error)?;
                 Ok(Self::Int(i64::from(byte)))
+            }
+            // `list[int]` and the other parameterizable types build a
+            // `types.GenericAlias`; `type` is a builtin function in Monty but
+            // subscripts like the type it is in CPython.
+            Self::Builtin(Builtins::Type(t)) if t.has_class_getitem() => {
+                Ok(GenericAlias::subscript(*t, key.clone_with_heap(vm), vm))
+            }
+            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
+                Ok(GenericAlias::subscript(Type::Type, key.clone_with_heap(vm), vm))
+            }
+            // `typing.Union[int, str]` and `typing.Optional[int]` are the
+            // `|` unions spelled the pre-3.10 way.
+            Self::Builtin(Builtins::Type(Type::Union)) => Union::subscript(key.clone_with_heap(vm), vm),
+            Self::Marker(Marker(StaticStrings::Optional)) => Union::optional(key.clone_with_heap(vm), vm),
+            Self::Builtin(Builtins::Type(t)) => {
+                Err(ExcType::type_error_type_not_subscriptable(&t.name(vm.heap, vm.interns)))
+            }
+            Self::Builtin(Builtins::ExcType(exc_type)) => {
+                Err(ExcType::type_error_type_not_subscriptable((*exc_type).into()))
             }
             _ => Err(ExcType::type_error_not_sub(&self.py_type_name(vm))),
         }
@@ -2455,28 +2484,25 @@ pub(crate) struct Marker(pub StaticStrings);
 impl Marker {
     /// Returns the Python type of this marker.
     ///
-    /// System markers (stdout, stderr) are `TextIOWrapper`.
-    /// `typing.Union` has type `type` (matching CPython).
-    /// Other typing markers (Any, Optional, etc.) are `_SpecialForm`.
+    /// System markers (stdout, stderr) are `TextIOWrapper`; the typing
+    /// markers (Any, Optional, etc.) are `_SpecialForm`. (`typing.Union` is
+    /// a real type, `Type::Union`, not a marker.)
     pub(crate) fn py_type(self) -> Type {
         match self.0 {
             StaticStrings::Stdout | StaticStrings::Stderr => Type::TextIOWrapper,
-            StaticStrings::UnionType => Type::Type,
             _ => Type::SpecialForm,
         }
     }
 
     /// Writes the Python repr for this marker.
     ///
-    /// System markers have special repr formats ("<stdout>", "<stderr>").
-    /// `typing.Union` uses `<class 'typing.Union'>` format (matching CPython).
-    /// Other typing markers are prefixed with "typing." (e.g., "typing.Any").
+    /// System markers have special repr formats ("<stdout>", "<stderr>");
+    /// typing markers are prefixed with "typing." (e.g., "typing.Any").
     pub(crate) fn py_repr_fmt(self, f: &mut impl Write) -> fmt::Result {
         let s: &'static str = self.0.into();
         match self.0 {
             StaticStrings::Stdout => f.write_str("<stdout>")?,
             StaticStrings::Stderr => f.write_str("<stderr>")?,
-            StaticStrings::UnionType => f.write_str("<class 'typing.Union'>")?,
             _ => write!(f, "typing.{s}")?,
         }
         Ok(())

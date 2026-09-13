@@ -1213,6 +1213,18 @@ pub enum StaticStrings {
     /// `header` parameter of the `binascii` quoted-printable pair.
     #[strum(serialize = "header")]
     Header,
+    /// `__origin__` of a `types.GenericAlias`.
+    #[strum(serialize = "__origin__")]
+    DunderOrigin,
+    /// `__args__` of a `types.GenericAlias`.
+    #[strum(serialize = "__args__")]
+    DunderArgs,
+    /// `__parameters__` of a `types.GenericAlias`.
+    #[strum(serialize = "__parameters__")]
+    DunderParameters,
+    /// `__class_getitem__`, the classmethod behind `list[int]`.
+    #[strum(serialize = "__class_getitem__")]
+    ClassGetitem,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

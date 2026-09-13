@@ -384,7 +384,7 @@ impl VM<'_> {
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
-                t.call_class_method(name_id, args, this).map(Into::into)
+                t.call_class_method(name_id, args, this)
             }
             _ => {
                 // Non-heap values without method support
@@ -625,6 +625,11 @@ impl VM<'_> {
             HeapData::ExtFunction(function) => {
                 let name = function.clone_name();
                 return Ok(CallResult::External(name, args));
+            }
+            // `list[int](x)` is `list(x)`: the arguments play no part.
+            HeapData::GenericAlias(alias) => {
+                let origin = alias.origin_value();
+                return self.call_function(&origin, args);
             }
             // The bound arguments are lifted out and the heap borrow released
             // before dispatching, so the wrapped callable may reach this same

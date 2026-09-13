@@ -197,7 +197,7 @@ mod tests {
         );
         assert_eq!(
             static_strings_fingerprint(),
-            0x968e_3d80_f806_fc90,
+            0x9642_916b_61c8_416a,
             "static strings changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(
@@ -215,12 +215,12 @@ mod tests {
 
         assert_eq!(
             variant_order_fingerprint(Type::VARIANTS),
-            0xc66d_9014_0335_92be,
+            0xfc3c_c4c9_d68d_2ac8,
             "Type variants changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(
             variant_order_fingerprint(MontyType::VARIANTS),
-            0x091c_2e22_e9b8_f5ee,
+            0x8ac1_c04f_70cb_b2b8,
             "MontyType variants changed for dump version {DUMP_VERSION}"
         );
         // Builtin discriminants are `CallBuiltinFunction` operands, so the enum

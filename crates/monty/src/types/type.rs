@@ -4,15 +4,15 @@ use num_bigint::BigInt;
 
 use crate::{
     args::{ArgValues, FromArgs, is_long_int},
-    builtins::object_setattr::builtin_object_setattr,
-    bytecode::VM,
+    builtins::{Builtins, object_setattr::builtin_object_setattr},
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
     modules::collections,
     types::{
-        AttrCallResult, Bytes, Deque, Dict, FrozenSet, List, LongInt, Partial, Path, PyTrait, Range, Set, Slice, Str,
+        Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Range, Set, Slice, Str,
         TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         date, datetime,
@@ -23,7 +23,7 @@ use crate::{
         str::StringRepr,
         time, timedelta,
     },
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// Represents the Python type of a value.
@@ -237,6 +237,15 @@ pub enum Type {
     ItertoolsBatched,
     #[strum(serialize = "itertools.zip_longest")]
     ItertoolsZipLongest,
+    /// `types.GenericAlias`, the type of `list[int]`; qualified like
+    /// `functools.partial`, so `type(list[int])` reads `<class 'types.GenericAlias'>`.
+    #[strum(serialize = "types.GenericAlias")]
+    GenericAlias,
+    /// `typing.Union`, the type of `int | None` — one object with
+    /// `types.UnionType` since CPython 3.14, and the value bound to
+    /// `typing.Union` itself.
+    #[strum(serialize = "typing.Union")]
+    Union,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -365,6 +374,30 @@ impl Type {
         }
     }
 
+    /// Whether subscripting this type builds a `types.GenericAlias`
+    /// (`list[int]`), i.e. whether CPython's type defines `__class_getitem__`.
+    ///
+    /// `type` is included even though Monty binds the name to a builtin
+    /// function: `type[int]` is routed here by `Value::py_getitem`.
+    #[must_use]
+    pub(crate) const fn has_class_getitem(self) -> bool {
+        matches!(
+            self,
+            Self::List
+                | Self::Tuple
+                | Self::Dict
+                | Self::DefaultDict
+                | Self::Counter
+                | Self::Set
+                | Self::FrozenSet
+                | Self::Type
+                | Self::Deque
+                | Self::Partial
+                | Self::RePattern
+                | Self::ReMatch
+        )
+    }
+
     /// Returns whether this is one of Python's concrete iterator types.
     #[must_use]
     pub(crate) const fn is_iterator(self) -> bool {
@@ -480,58 +513,75 @@ impl Type {
 
     /// Dispatches classmethod calls on builtin type objects (e.g. `dict.fromkeys`).
     ///
-    /// Keeps classmethod behavior centralized with type semantics instead of VM call plumbing.
+    /// Keeps classmethod behavior centralized with type semantics instead of VM
+    /// call plumbing. Any other name is looked up as a plain attribute and the
+    /// result called, so `list.__name__()` raises `'str' object is not callable`.
     pub(crate) fn call_class_method(
         self,
         method_id: StringId,
         args: ArgValues,
         vm: &mut VM<'_>,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         match (self, method_id) {
             // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
             (Self::Dict, m) if m == StaticStrings::Fromkeys => {
-                dict_fromkeys(args, DictKind::plain(), vm).map(AttrCallResult::Value)
+                dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value)
             }
             // `defaultdict.fromkeys(...)` builds `cls()`, i.e. a defaultdict with no
             // factory — matching CPython's inherited `dict.fromkeys` classmethod.
             (Self::DefaultDict, m) if m == StaticStrings::Fromkeys => {
-                dict_fromkeys(args, DictKind::defaultdict(None), vm).map(AttrCallResult::Value)
+                dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value)
             }
             // Counter deliberately disables the inherited classmethod.
             (Self::Counter, m) if m == StaticStrings::Fromkeys => {
                 args.drop_with(vm);
                 Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
             }
-            (Self::Bytes, m) if m == StaticStrings::Fromhex => bytes_fromhex(args, vm).map(AttrCallResult::Value),
+            (Self::Bytes, m) if m == StaticStrings::Fromhex => bytes_fromhex(args, vm).map(CallResult::Value),
             (Self::Date, m) if m == StaticStrings::Today => date::class_today(vm.heap, args),
-            (Self::Path, m) if m == StaticStrings::Cwd => path::class_cwd(vm, args).map(AttrCallResult::Value),
+            (Self::Path, m) if m == StaticStrings::Cwd => path::class_cwd(vm, args).map(CallResult::Value),
             (Self::Date, m) if m == StaticStrings::Fromisoformat => {
-                date::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+                date::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
             }
             (Self::DateTime, m) if m == StaticStrings::Now => datetime::class_now(vm, args),
             (Self::DateTime, m) if m == StaticStrings::Strptime => {
-                datetime::class_strptime(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+                datetime::class_strptime(vm.heap, args, vm.interns).map(CallResult::Value)
             }
             (Self::DateTime, m) if m == StaticStrings::Fromisoformat => {
-                datetime::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+                datetime::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
             }
             // `object.__setattr__(obj, name, value)` called directly, which is
             // how it is nearly always reached; `object.__setattr__` as a value
             // is handled by `Value::py_getattr`.
             (Self::Object, m) if vm.interns.get_str(m) == "__setattr__" => {
-                builtin_object_setattr(vm, args).map(AttrCallResult::Value)
+                builtin_object_setattr(vm, args).map(CallResult::Value)
             }
             (Self::Time, m) if m == StaticStrings::Fromisoformat => {
-                time::class_fromisoformat(vm, args).map(AttrCallResult::Value)
+                time::class_fromisoformat(vm, args).map(CallResult::Value)
             }
-            _ => {
-                let method_name = vm.interns.get_str(method_id);
-                args.drop_with(vm.heap);
-                Err(ExcType::attribute_error_type(
-                    &self.name(vm.heap, vm.interns),
-                    method_name,
-                ))
+            // `list.__class_getitem__(int)` is `list[int]`; the error names the
+            // bare type as CPython does (`deque.__class_getitem__()`).
+            (ty, m) if ty.has_class_getitem() && m == StaticStrings::ClassGetitem => {
+                let name = format!("{}.__class_getitem__", ty.dunder_name(vm.heap, vm.interns));
+                let key = args.get_one_arg(&name, vm.heap)?;
+                Ok(CallResult::Value(GenericAlias::subscript(ty, key, vm)))
             }
+            // The type's plain attributes (`list.__name__`); a missing name
+            // raises the lookup's `type object 'list' has no attribute` error.
+            _ => match Value::Builtin(Builtins::Type(self)).py_getattr(&EitherStr::Interned(method_id), vm) {
+                Ok(CallResult::Value(value)) => {
+                    defer_drop!(value, vm);
+                    vm.call_function(value, args)
+                }
+                Ok(other) => {
+                    args.drop_with(vm.heap);
+                    Ok(other)
+                }
+                Err(err) => {
+                    args.drop_with(vm.heap);
+                    Err(err)
+                }
+            },
         }
     }
 
@@ -593,6 +643,12 @@ impl Type {
                 };
                 defer_drop!(v, vm);
                 Ok(Value::Bool(v.py_bool(vm)?))
+            }
+
+            // CPython words this one differently from the other uncallable types.
+            Self::Union => {
+                args.drop_with(vm);
+                Err(ExcType::type_error("cannot create 'typing.Union' instances"))
             }
 
             // Non-callable types - raise TypeError
