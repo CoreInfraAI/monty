@@ -261,6 +261,76 @@ pub enum StaticStrings {
     #[strum(serialize = "3.14.0 (Monty)")]
     MontyVersionString,
     Monty,
+    Argv,
+    Hexversion,
+    ApiVersion,
+    Copyright,
+    /// The value of `sys.copyright`.
+    #[strum(serialize = "Copyright (c) Pydantic Services Inc. 2026 to present")]
+    MontyCopyright,
+    BuiltinModuleNames,
+    Maxsize,
+    Maxunicode,
+    Byteorder,
+    /// The value of `sys.byteorder` on every target Monty builds for.
+    Little,
+    FloatReprStyle,
+    /// The value of `sys.float_repr_style`.
+    Short,
+    Executable,
+    Prefix,
+    ExecPrefix,
+    BasePrefix,
+    BaseExecPrefix,
+    Platlibdir,
+    /// The value of `sys.platlibdir`.
+    Lib,
+    Abiflags,
+    DontWriteBytecode,
+    PycachePrefix,
+
+    // ==========================
+    // sys.float_info fields
+    FloatInfo,
+    #[strum(serialize = "sys.float_info")]
+    SysFloatInfo,
+    Max,
+    MaxExp,
+    #[strum(serialize = "max_10_exp")]
+    Max10Exp,
+    Min,
+    MinExp,
+    #[strum(serialize = "min_10_exp")]
+    Min10Exp,
+    Dig,
+    MantDig,
+    Epsilon,
+    Radix,
+    Rounds,
+
+    // ==========================
+    // sys.flags fields
+    // `flags` itself reuses the `Flags` variant added for `pattern.flags`.
+    #[strum(serialize = "sys.flags")]
+    SysFlags,
+    Debug,
+    Inspect,
+    Interactive,
+    Optimize,
+    NoUserSite,
+    NoSite,
+    IgnoreEnvironment,
+    Verbose,
+    BytesWarning,
+    Quiet,
+    HashRandomization,
+    Isolated,
+    DevMode,
+    #[strum(serialize = "utf8_mode")]
+    Utf8Mode,
+    WarnDefaultEncoding,
+    SafePath,
+    IntMaxStrDigits,
 
     // ==========================
     // os.stat_result fields
