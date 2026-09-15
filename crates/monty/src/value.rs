@@ -1317,12 +1317,12 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_setitem(&mut self, key: Self, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
-        match self {
-            Self::Ref(id) => vm.heap.read(*id).py_setitem(key, value, vm),
-            _ => Err(ExcType::type_error(format!(
-                "'{}' object does not support item assignment",
-                self.py_type_name(vm)
-            ))),
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_setitem(key, value, vm)
+        } else {
+            key.drop_with(vm);
+            value.drop_with(vm);
+            Err(ExcType::type_error_not_sub_assignment(&self.py_type_name(vm)))
         }
     }
 
@@ -1415,16 +1415,16 @@ impl Value {
             .unwrap_or_else(|| self.py_type_heap(heap).name(heap, interns))
     }
 
-    /// Class name of a named tuple or host class instance, if this value is
-    /// one.
+    /// Class name to use in error messages when [`Type`] does not carry it:
+    /// a named tuple, a host class instance, or a `random.Random`.
     ///
-    /// Both keep their class name in the heap entry rather than in [`Type`],
-    /// which carries no identity for them (unlike `Type::Instance`, whose
-    /// payload is the refcounted class object). Error messages therefore
-    /// reach for it here to name the class (`'P'`, `'Point'`) rather than the
-    /// generic `'namedtuple'` / `'HostClass'`, matching CPython — including
-    /// for structseqs, whose stored name is already the qualified
-    /// `sys.version_info`.
+    /// Named tuples and host classes keep their class name in the heap entry
+    /// (unlike `Type::Instance`, whose payload is the refcounted class
+    /// object), so messages name the class (`'P'`, `'Point'`) rather than
+    /// the generic `'namedtuple'` / `'HostClass'`, matching CPython. That
+    /// includes structseqs, whose stored name is already the qualified
+    /// `sys.version_info`. `Random` is the reverse case: its `Type` name is
+    /// the qualified `random.Random`, but messages use the bare class name.
     #[must_use]
     fn dynamic_class_name<'i>(&self, heap: &Heap, interns: &'i Interns) -> Option<Cow<'i, str>> {
         let Self::Ref(heap_id) = self else {
@@ -1433,6 +1433,9 @@ impl Value {
         let name = match heap.get(*heap_id) {
             HeapData::NamedTuple(nt) => nt.name_either(),
             HeapData::HostClass(hc) => host_class_type(heap, hc.class_id()).name_either(),
+            // A Python class in CPython, so messages carry the bare name and
+            // only `repr(type(x))` the module-qualified one.
+            HeapData::Random(_) => return Some(Cow::Borrowed("Random")),
             _ => return None,
         };
         Some(name.to_cow(interns))

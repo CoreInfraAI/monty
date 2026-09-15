@@ -881,7 +881,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // Each formatter builder must fail softly before the worker reaches its hard ceiling.
         ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_231_000),
         ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_431_791),
-        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_230_835),
+        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_231_849),
         // `%` formatting: padding, float digits, integer zero-extension and output growth.
         ("'%*d' % (2_000_000, 1)", 2_031_460),
         ("'%.*f' % (1_000_000, 1.0)", 1_160_498),
@@ -936,6 +936,14 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
             16_031_971,
+        ),
+        // `randbytes` charges its word buffer and the byte buffer it fills.
+        ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_236_172),
+        // A `range` population can be as long as `i64::MAX` while costing nothing,
+        // so `sample` must saturate its size arithmetic and refuse the pick buffer.
+        (
+            "import random\nrandom.seed(0)\nrandom.sample(range(2**63 - 1), 2**63 - 1)",
+            u64::MAX,
         ),
         // `itertools.batched` preflights one batch, capped at `n`.
         (

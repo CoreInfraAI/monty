@@ -957,6 +957,17 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, msg).into()
     }
 
+    /// Creates a generic `IndexError` with a custom message.
+    fn index_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::IndexError, msg).into()
+    }
+
+    /// `random.seed()` / `random.Random()` given something other than
+    /// `None`, an int, a float, a `str` or `bytes`.
+    fn random_seed_type() -> RunError {
+        Self::type_error("The only supported seed types are:\nNone, int, float, str, bytes, and bytearray.")
+    }
+
     /// Creates a TypeError for bytes() constructor with invalid type.
     ///
     /// Matches CPython's format: `TypeError: cannot convert '{type}' object to bytes`
@@ -1566,6 +1577,13 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "Python int too large to convert to C ssize_t").into()
     }
 
+    /// Creates the OverflowError for an argument clinic converts to `uint64_t`
+    /// (`random.getrandbits`), which CPython names differently from `ssize_t`.
+    #[must_use]
+    fn overflow_c_uint64() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "Python int too large for C uint64_t").into()
+    }
+
     /// Creates an OverflowError when a Python int doesn't fit into a C `int` (i32).
     ///
     /// Matches CPython's format: `OverflowError: Python int too large to convert to C int`
@@ -1660,6 +1678,12 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn overflow_int_to_float() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "int too large to convert to float").into()
+    }
+
+    /// Creates the OverflowError raised when a math function overflows on a finite input.
+    #[must_use]
+    fn overflow_math_range() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "math range error").into()
     }
 
     /// Creates the OverflowError raised when a float power overflows.

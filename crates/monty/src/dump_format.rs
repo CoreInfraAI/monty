@@ -198,7 +198,7 @@ mod tests {
         );
         assert_eq!(
             static_strings_fingerprint(),
-            0x6db_56c9_2c47_0eac,
+            0x3ee2_697e_439b_44b2,
             "static strings changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(static_strings_fingerprint())
         );
@@ -218,7 +218,7 @@ mod tests {
 
         assert_eq!(
             variant_order_fingerprint(Type::VARIANTS),
-            0x7812_725f_a909_cd91,
+            0xdb83_e6a5_fcb3_9768,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_order_fingerprint(Type::VARIANTS))
         );

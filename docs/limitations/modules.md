@@ -11,6 +11,9 @@ attribute reverts on the next import — `sys.argv.append(...)` is not seen by a
 later `import sys`. Module attributes cannot be set at all
 (`sys.x = 1` raises `AttributeError`), so there is no way to share state
 through a module.
+The one exception is `random`'s module-level generator, which is session
+state: a `random.seed(...)` is still in effect after a later `import random`,
+in the next feed, and after a dump (see [random.md](random.md)).
 
 ## Modules available
 
@@ -28,6 +31,7 @@ through a module.
 | `math`        | [math.md](math.md)               |
 | `os`          | [os.md](os.md)                   |
 | `pathlib`     | [pathlib.md](pathlib.md)         |
+| `random`      | [random.md](random.md)           |
 | `re`          | [re.md](re.md)                   |
 | `sys`         | [sys.md](sys.md)                 |
 | `typing`      | [typing.md](typing.md)           |
@@ -47,7 +51,7 @@ Common modules that are *not* importable in Monty (non-exhaustive):
 `abc`, `argparse`, `array`, `bisect`, `contextlib`, `copy`, `csv`,
 `ctypes`, `decimal`, `enum`, `fractions`,
 `hashlib`, `heapq`, `hmac`, `http`, `inspect`, `io`,
-`logging`, `multiprocessing`, `operator`, `pickle`, `queue`, `random`,
+`logging`, `multiprocessing`, `operator`, `pickle`, `queue`,
 `socket`, `string`, `struct`, `subprocess`, `tempfile`, `threading`,
 `time`, `traceback`, `unittest`, `urllib`, `uuid`, `warnings`, `weakref`,
 `zipfile`, `zlib`.
