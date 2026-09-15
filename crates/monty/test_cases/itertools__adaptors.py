@@ -217,6 +217,7 @@ try:
 except TypeError as exc:
     assert str(exc) == 'chain() takes no keyword arguments'
 
+
 # === cycle ===
 assert list(itertools.islice(itertools.cycle([1, 2, 3]), 7)) == [1, 2, 3, 1, 2, 3, 1]
 assert list(itertools.islice(itertools.cycle('ab'), 5)) == ['a', 'b', 'a', 'b', 'a']
