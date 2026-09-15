@@ -1018,6 +1018,54 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::value_error("batched(): incomplete batch")
     }
 
+    /// Creates the ValueError the combinatoric `itertools` constructors raise
+    /// for a negative `r`.
+    #[must_use]
+    fn combinatoric_negative_r() -> RunError {
+        Self::value_error("r must be non-negative")
+    }
+
+    /// Creates the TypeError `itertools.permutations` raises for an `r` that is
+    /// neither `None` nor an `int` — it checks the type rather than `__index__`.
+    #[must_use]
+    fn permutations_bad_r() -> RunError {
+        Self::type_error("Expected int as r")
+    }
+
+    /// Creates the RuntimeError a `tee` raises when one of its iterators is
+    /// stepped from inside the source read of another.
+    #[must_use]
+    fn tee_reentered() -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, "cannot re-enter the tee iterator").into()
+    }
+
+    /// Creates the ValueError `itertools.tee` raises for a negative `n`.
+    #[must_use]
+    fn tee_negative_n() -> RunError {
+        Self::value_error("n must be >= 0")
+    }
+
+    /// Creates the ValueError `itertools.product` raises for a negative `repeat`.
+    #[must_use]
+    fn product_negative_repeat() -> RunError {
+        Self::value_error("repeat argument cannot be negative")
+    }
+
+    /// Creates the OverflowError `itertools.product` raises when `repeat` puts
+    /// its index array beyond what a `Py_ssize_t` can address.
+    #[must_use]
+    fn product_repeat_too_large() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "repeat argument too large").into()
+    }
+
+    /// Creates the message-less `MemoryError` CPython raises when an allocation
+    /// is too large to attempt at all, rather than merely too large to fit the
+    /// sandbox's budget — `combinations_with_replacement('a', 2**62)`.
+    #[must_use]
+    fn allocation_too_large() -> RunError {
+        SimpleException::new(ExcType::MemoryError, None).into()
+    }
+
     /// Creates the ValueError `itertools.islice` raises for a non-positive or
     /// non-integer `step`.
     #[must_use]

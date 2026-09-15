@@ -58,8 +58,8 @@ pub(crate) enum StandardLib {
     Datetime,
     /// The `unicodedata` module providing Unicode Character Database access.
     Unicodedata,
-    /// The `itertools` module providing lazy iterators (only `count` and
-    /// `repeat` implemented).
+    /// The `itertools` module providing lazy iterators — every name CPython
+    /// exports, the private ones included.
     Itertools,
     /// The `dataclasses` module providing `@dataclass` and helpers.
     Dataclasses,

@@ -226,3 +226,22 @@ acc_late_src = ReentrantCounter(3, lambda: acc_late)
 acc_late = itertools.accumulate(acc_late_src)
 assert list(acc_late) == [1, 3, 11, 16, 22]
 assert acc_late_src.inner == 7
+
+
+# === the adaptors this branch adds ===
+# `chain.from_iterable` drives its outer iterator through the same window as
+# `chain`'s arguments, so it is stepped the same way.
+assert reenter(itertools.chain.from_iterable) == ['2', '3', '4', '5', '6']
+assert reenter(itertools.chain.from_iterable, hook_at=2) == ['1', '3', '4', '5', '6']
+
+# The nested step opens the only group there is, leaving the outer drain with a
+# spent parent.
+assert reenter(lambda s: itertools.groupby(s, len)) == []
+
+# `tee` is the one that refuses: a source that steps any iterator of the group
+# from inside the read that fills its buffer would drive that read again.
+try:
+    reenter(lambda s: itertools.tee(s)[0])
+    assert False, 'expected RuntimeError'
+except RuntimeError as exc:
+    assert str(exc) == 'cannot re-enter the tee iterator'
