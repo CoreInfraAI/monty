@@ -26,7 +26,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// rejected instead of decoding as their neighbour. That covers the
 /// interpreter's own types *and* everything reachable from [`Dump`] — notably
 /// [`TypeCheckingConfig`](monty_types::TypeCheckingConfig) in `monty-types`.
-pub const DUMP_VERSION: u16 = 9;
+pub const DUMP_VERSION: u16 = 10;
 
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
@@ -178,10 +178,7 @@ mod tests {
     use strum::VariantNames;
 
     use super::DUMP_VERSION;
-    use crate::{
-        bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint,
-        intern::static_strings_fingerprint, types::Type,
-    };
+    use crate::{bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, types::Type};
 
     /// If a component changes incompatibly, bump `DUMP_VERSION` before updating its
     /// expected fingerprint. Compatible changes only require a fingerprint update.
@@ -192,15 +189,9 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0x0d57_34dd_be07_19ac,
+            0xc121_c3a3_9312_15ad,
             "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(opcode_fingerprint())
-        );
-        assert_eq!(
-            static_strings_fingerprint(),
-            0xbf4e_83ab_0ca1_3aa2,
-            "static strings changed for dump version {DUMP_VERSION}, actual: {}",
-            grouped_hex(static_strings_fingerprint())
         );
         assert_eq!(
             comparison_operators_fingerprint(),

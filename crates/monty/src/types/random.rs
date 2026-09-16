@@ -574,12 +574,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Random> {
     }
 
     /// `VERSION`, the state-format number `getstate()` reports.
-    fn py_getattr(&self, attr: &EitherStr, _vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        Ok((attr.static_string() == Some(StaticStrings::RandomVersion)).then_some(CallResult::Value(Value::Int(3))))
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        Ok((attr.static_string(vm.interns) == Some(StaticStrings::RandomVersion))
+            .then_some(CallResult::Value(Value::Int(3))))
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if let Some(function) = attr.static_string().and_then(RandomFunctions::from_static_string) {
+        if let Some(function) = attr
+            .static_string(vm.interns)
+            .and_then(RandomFunctions::from_static_string)
+        {
             random_dispatch(RandomTarget::Instance(self.id()), function, args, vm)
         } else {
             args.drop_with(vm);

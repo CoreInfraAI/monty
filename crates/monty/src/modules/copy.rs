@@ -34,11 +34,8 @@ const COPY_FUNCTIONS: &[(StaticStrings, CopyFunctions)] = &[
 ];
 
 /// Creates the `copy` module on the heap.
-///
-/// # Panics
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Copy);
+    let mut module = Module::new(StaticStrings::Copy, vm.interns);
 
     for (name, func) in COPY_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Copy(*func)), vm);

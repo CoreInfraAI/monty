@@ -317,19 +317,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         // Each method takes the `dt` it would need to resolve a DST rule. A fixed
         // offset has no such rule, so `take_dt_arg` validates and discards it.
-        match attr.string_id() {
-            Some(id) if id == StaticStrings::Utcoffset => {
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Utcoffset) => {
                 take_dt_arg("timezone.utcoffset", args, vm)?;
                 let offset_seconds = self.get(vm.heap).offset_seconds;
                 Ok(CallResult::Value(utcoffset_value(Some(offset_seconds), vm.heap)))
             }
-            Some(id) if id == StaticStrings::Tzname => {
+            Some(StaticStrings::Tzname) => {
                 take_dt_arg("timezone.tzname", args, vm)?;
                 let tz = self.get(vm.heap);
                 let name = tzname_string(tz.offset_seconds, tz.name.as_deref());
                 Ok(CallResult::Value(allocate_string(name, vm.heap)))
             }
-            Some(id) if id == StaticStrings::Dst => {
+            Some(StaticStrings::Dst) => {
                 take_dt_arg("timezone.dst", args, vm)?;
                 // A fixed offset never observes daylight saving.
                 Ok(CallResult::Value(Value::None))

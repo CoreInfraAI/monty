@@ -561,53 +561,51 @@ impl Type {
         args: ArgValues,
         vm: &mut VM<'_>,
     ) -> RunResult<CallResult> {
-        match (self, method_id) {
+        match (self, vm.interns.static_string(method_id)) {
             // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
-            (Self::Dict, m) if m == StaticStrings::Fromkeys => {
+            (Self::Dict, Some(StaticStrings::Fromkeys)) => {
                 dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value)
             }
             // `defaultdict.fromkeys(...)` builds `cls()`, i.e. a defaultdict with no
             // factory — matching CPython's inherited `dict.fromkeys` classmethod.
-            (Self::DefaultDict, m) if m == StaticStrings::Fromkeys => {
+            (Self::DefaultDict, Some(StaticStrings::Fromkeys)) => {
                 dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value)
             }
             // `chain.from_iterable(iterable)`, CPython's one classmethod here.
-            (Self::ItertoolsChain, m) if m == StaticStrings::FromIterable => {
+            (Self::ItertoolsChain, Some(StaticStrings::FromIterable)) => {
                 itertools::call(vm, ItertoolsFunctions::ChainFromIterable, args).map(CallResult::Value)
             }
             // Counter deliberately disables the inherited classmethod.
-            (Self::Counter, m) if m == StaticStrings::Fromkeys => {
+            (Self::Counter, Some(StaticStrings::Fromkeys)) => {
                 args.drop_with(vm);
                 Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
             }
-            (Self::Bytes, m) if m == StaticStrings::Fromhex => bytes_fromhex(args, vm).map(CallResult::Value),
-            (Self::Date, m) if m == StaticStrings::Today => date::class_today(vm.heap, args),
-            (Self::Path, m) if m == StaticStrings::Cwd => path::class_cwd(vm, args).map(CallResult::Value),
-            (Self::Date, m) if m == StaticStrings::Fromisoformat => {
+            (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
+            (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm.heap, args),
+            (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
+            (Self::Date, Some(StaticStrings::Fromisoformat)) => {
                 date::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
             }
-            (Self::DateTime, m) if m == StaticStrings::Now => datetime::class_now(vm, args),
-            (Self::DateTime, m) if m == StaticStrings::Strptime => {
+            (Self::DateTime, Some(StaticStrings::Now)) => datetime::class_now(vm, args),
+            (Self::DateTime, Some(StaticStrings::Strptime)) => {
                 datetime::class_strptime(vm.heap, args, vm.interns).map(CallResult::Value)
             }
-            (Self::DateTime, m) if m == StaticStrings::Fromisoformat => {
+            (Self::DateTime, Some(StaticStrings::Fromisoformat)) => {
                 datetime::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
             }
             // `object.__setattr__(obj, name, value)` called directly, which is
             // how it is nearly always reached; `object.__setattr__` as a value
             // is handled by `Value::py_getattr`.
-            (Self::Object, m) if vm.interns.get_str(m) == "__setattr__" => {
+            (Self::Object, _) if vm.interns.get_str(method_id) == "__setattr__" => {
                 builtin_object_setattr(vm, args).map(CallResult::Value)
             }
-            (Self::DateTime, m) if m == StaticStrings::Combine => {
-                datetime::class_combine(vm, args).map(CallResult::Value)
-            }
-            (Self::Time, m) if m == StaticStrings::Fromisoformat => {
+            (Self::DateTime, Some(StaticStrings::Combine)) => datetime::class_combine(vm, args).map(CallResult::Value),
+            (Self::Time, Some(StaticStrings::Fromisoformat)) => {
                 time::class_fromisoformat(vm, args).map(CallResult::Value)
             }
             // `list.__class_getitem__(int)` is `list[int]`; the error names the
             // bare type as CPython does (`deque.__class_getitem__()`).
-            (ty, m) if ty.has_class_getitem() && m == StaticStrings::ClassGetitem => {
+            (ty, Some(StaticStrings::ClassGetitem)) if ty.has_class_getitem() => {
                 let name = format!("{}.__class_getitem__", ty.dunder_name(vm.heap, vm.interns));
                 let key = args.get_one_arg(&name, vm.heap)?;
                 Ok(CallResult::Value(GenericAlias::subscript(ty, key, vm)))
@@ -644,7 +642,7 @@ impl Type {
         const MAX_TIMEDELTA_MICROS: i128 = ((MAX_TIMEDELTA_DAYS as i128) + 1) * DAY_MICROSECONDS - 1;
         const MIN_TIMEDELTA_MICROS: i128 = (MIN_TIMEDELTA_DAYS as i128) * DAY_MICROSECONDS;
 
-        Some(match (self, attr.static_string()?) {
+        Some(match (self, attr.static_string(vm.interns)?) {
             (Self::Date, StaticStrings::Min) => date::allocate_ymd(1, 1, 1, vm.heap),
             (Self::Date, StaticStrings::Max) => date::allocate_ymd(9999, 12, 31, vm.heap),
             (Self::Date, StaticStrings::Resolution) => timedelta::allocate_micros(DAY_MICROSECONDS, vm.heap),
