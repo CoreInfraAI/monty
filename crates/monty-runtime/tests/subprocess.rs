@@ -1209,6 +1209,89 @@ fn tee_group_is_charged_before_it_is_built() {
     }
 }
 
+/// Containers grown one element at a time must raise `MemoryError` and leave
+/// the session usable, whatever the limit.
+///
+/// A `Vec` doubling charges its whole increment in one allocation, so a push
+/// straddling the soft limit used to land past the hard ceiling with no
+/// checkpoint in between. The limits here catch both halves: at 24 MB (the
+/// limit reported in #700) the doubling cleared the headroom, killing the
+/// worker; at 6 MB it fits, so the worker survived but the session was left
+/// over its limit with the next statement failing too.
+#[test]
+fn incremental_container_growth_stays_graceful() {
+    let cases = [
+        "[x for x in range(10_000_000)]",
+        "l = []\nfor x in range(10_000_000):\n    l.append(x)",
+        "l = []\nfor x in range(10_000_000):\n    l.insert(len(l), x)",
+        "s = set()\nfor x in range(10_000_000):\n    s.add(x)",
+        "d = {}\nfor x in range(10_000_000):\n    d[x] = x",
+        "from collections import deque\nd = deque()\nfor x in range(10_000_000):\n    d.append(x)",
+        "from collections import deque\nd = deque()\nfor x in range(10_000_000):\n    d.appendleft(x)",
+    ];
+
+    for limit_mb in [6, 12, 24] {
+        for code in cases {
+            let mut child = ChildProc::spawn();
+            child.create_repl_with(configure_with_max_memory(limit_mb * 1024 * 1024));
+            let (_, event) = child.feed(code);
+            let error = expect_error(event);
+            assert_eq!(error.exc_type, "MemoryError", "{limit_mb}MB: {code}");
+            // The session outliving the error is the whole point: a worker
+            // that hit the hard limit would be gone by now.
+            assert_eq!(
+                child.feed_complete("1 + 1"),
+                MontyObject::Int(2),
+                "{limit_mb}MB: {code}"
+            );
+            child.shutdown();
+        }
+    }
+}
+
+/// Buffers of interpreter values that native code fills in one call must raise
+/// `MemoryError` rather than kill the worker.
+///
+/// Each result here is a constant multiple of an already-tracked input, which
+/// used to be reason enough to skip the preflight. It is not: the increment
+/// still clears the allocator's fixed headroom in one allocation, and every
+/// case below killed the worker at the limit named.
+#[test]
+fn native_value_buffers_stay_graceful() {
+    let cases = [
+        // The `*args` clone, then the `SmallVec` the varargs are packed into.
+        ("def f(*a):\n    return len(a)\nt = tuple(range(700_000))\nf(*t)", 48),
+        // The same clone reached through an attribute call rather than a plain one.
+        (
+            "class C:\n    def m(self, *a):\n        return len(a)\nc = C()\nt = tuple(range(700_000))\nc.m(*t)",
+            48,
+        ),
+        // `findall`'s no-capture and one-capture arms build their result lists
+        // differently.
+        ("import re\nlen(re.findall('a', 'a' * 2_000_000))", 24),
+        ("import re\nlen(re.findall('(a)', 'a' * 2_000_000))", 24),
+        ("import json\nlen(json.loads('[' + '0,' * 1_500_000 + '0]'))", 24),
+        // Elements costing more on the heap than in the source: `[],` is three
+        // bytes of JSON but a whole heap entry, so one doubling clears the headroom.
+        ("import json\nlen(json.loads('[' + '[],' * 700_000 + '[]]'))", 24),
+        ("import json\nlen(json.loads('[' + '{},' * 700_000 + '{}]'))", 24),
+        (
+            "import json\nlen(json.loads('[' + '\"aaaaaaaa\",' * 900_000 + '\"a\"]'))",
+            24,
+        ),
+    ];
+
+    for (code, limit_mb) in cases {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(limit_mb * 1024 * 1024));
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
+        child.shutdown();
+    }
+}
+
 /// A consumer that is dropped stops holding the read-ahead back: the blocks it
 /// would have read are freed as the surviving consumer moves past them, so a
 /// long source costs a block at a time rather than all of it.
@@ -1244,6 +1327,48 @@ fn empty_product_pool_is_not_preflighted() {
     child.shutdown();
 }
 
+/// Importing under memory pressure must raise `MemoryError` like any other
+/// statement, not kill the worker.
+///
+/// `import` rebuilds a module namespace on every execution, and module
+/// construction has no error channel — `StandardLib::create` and
+/// `VM::load_module` are infallible, so a refusal inside `Module::set_attr`
+/// could only panic. That is why those inserts skip the growth check.
+#[test]
+fn importing_under_memory_pressure_stays_graceful() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(6 * 1024 * 1024));
+    // Grows past the limit in small steps, re-importing each time so an import
+    // lands in the window after usage crosses it but before the next checkpoint.
+    let code = "def f():\n    xs = []\n    for _ in range(1_000_000):\n        xs.append('x' * 1000)\n        import functools\nf()";
+    let (_, event) = child.feed(code);
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    // The session outliving the error is the whole point: a panicking
+    // `set_attr` would have taken the worker with it.
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// The growth preflights must leave ordinary work alone.
+///
+/// Everything here fits the limit several times over, so a check that charged
+/// a growth the buffer never performs — or ran on every push rather than at a
+/// capacity boundary — would turn a working program into a `MemoryError`. The
+/// refusal tests above only assert that a refusal happens, so they cannot
+/// catch that.
+#[test]
+fn container_growth_preflight_leaves_ordinary_work_alone() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(32 * 1024 * 1024));
+    let code = "from collections import deque\nl = []\nd = {}\ns = set()\nq = deque()\nfor x in range(50_000):\n    l.append(x)\n    l.insert(len(l), x)\n    d[x] = x\n    s.add(x)\n    q.append(x)\n    q.appendleft(x)\nlen(l) + len(d) + len(s) + len(q)";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(300_000));
+    // The JSON array loop polls memory per element as well as checking its
+    // buffer, so ordinary parsing has two ways to be refused, not one.
+    let json_code = "import json\nlen(json.loads('[' + '0,' * 50_000 + '0]'))";
+    assert_eq!(child.feed_complete(json_code), MontyObject::Int(50_001));
+    child.shutdown();
+}
+
 /// A bounded deque retains at most `maxlen` items, so extending it from a huge
 /// exact-hint iterator (the sliding-window pattern) must not trip the
 /// `deque.extend` preflight — the memory really is capped at `maxlen`.
@@ -1254,6 +1379,68 @@ fn bounded_deque_extend_is_not_preflighted() {
     let code = "from collections import deque\nd = deque(maxlen=8)\nd.extend(range(500_000))\nlen(d)";
     assert_eq!(child.feed_complete(code), MontyObject::Int(8));
     child.shutdown();
+}
+
+/// A deque that has reached `maxlen` is not exempt from the growth preflight.
+///
+/// `append` and `appendleft` push before they evict, so a deque whose ring is
+/// exactly full still reallocates on that push — once, by its whole length.
+/// Unchecked, that one allocation cleared the hard-limit headroom and killed
+/// the worker.
+#[test]
+fn full_bounded_deque_growth_stays_graceful() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(12 * 1024 * 1024));
+    // 2^19 items fill the ring exactly, so the append after them doubles it.
+    let code = "from collections import deque\nd = deque(maxlen=524_288)\nd.extend(range(524_288))\nd.append(0)";
+    let (_, event) = child.feed(code);
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    // The session outliving the error is the whole point.
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// `re.split` must preflight the pieces it collects, not only the list it
+/// builds from them.
+///
+/// The pieces are 16 bytes each, bounded only by the subject, and the whole
+/// `Vec` was collected before the first check ran — splitting a 1.5 MB subject
+/// on a comma killed the worker.
+#[test]
+fn oversized_split_stays_graceful() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    let (_, event) = child.feed("import re\nlen(re.split(',', ',' * 1_500_000))");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// A refused `findall` must leave nothing of its partial result behind.
+///
+/// Its scan collects borrowed slices rather than heap values, so a refusal has
+/// nothing to strand — which matters because it could not release them anyway:
+/// that needs `&mut Heap`, and the compiled pattern is borrowed out of the heap
+/// while the match iterator lives. The allocation afterwards fits only if the
+/// session got its memory back.
+#[test]
+fn refused_findall_leaves_no_partial_result() {
+    for pattern in ["'ab'", "'(a)(b)'"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        assert_eq!(
+            child.feed_complete("import re\ns = 'ab' * 1_000_000\nlen(s)"),
+            MontyObject::Int(2_000_000)
+        );
+        let (_, event) = child.feed(&format!("len(re.findall({pattern}, s))"));
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{pattern}");
+        assert_eq!(
+            child.feed_complete("len([0] * 500_000)"),
+            MontyObject::Int(500_000),
+            "{pattern}"
+        );
+        child.shutdown();
+    }
 }
 
 /// Assert a `memory limit exceeded` message reports roughly `expected` bytes
