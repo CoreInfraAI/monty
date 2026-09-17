@@ -116,7 +116,7 @@ len(calls)
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
-    assert_eq!(result, MontyObject::Int(0));
+    assert_eq!(result, MontyObject::int(0));
 }
 
 #[test]
@@ -132,7 +132,7 @@ len(xs)
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
-    assert_eq!(result, MontyObject::Int(2));
+    assert_eq!(result, MontyObject::int(2));
 }
 
 #[test]
@@ -150,7 +150,7 @@ len(calls)
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
-    assert_eq!(result, MontyObject::Int(1));
+    assert_eq!(result, MontyObject::int(1));
 }
 
 #[test]
@@ -164,7 +164,7 @@ r
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
-    assert_eq!(result, MontyObject::String("assert 1 == 2".into()));
+    assert_eq!(result, MontyObject::string("assert 1 == 2"));
 }
 
 #[test]
@@ -273,7 +273,7 @@ r[:10] + '|' + r[-9:] + '|' + str(len(r))
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).expect("AssertionError should be caught");
     // 7 ("assert ") + 121 (120-char repr + `…`) + 6 (" == []") = 134 chars.
-    assert_eq!(result, MontyObject::String("assert ['x|xx… == []|134".into()));
+    assert_eq!(result, MontyObject::string("assert ['x|xx… == []|134"));
 }
 
 #[test]

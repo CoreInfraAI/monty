@@ -52,8 +52,8 @@ use crate::{
 ///     CompileOptions::default(),
 /// )
 /// .unwrap();
-/// let result = runner.run_no_limits(vec![MontyObject::Int(41)]).unwrap();
-/// assert_eq!(result, MontyObject::Int(42));
+/// let result = runner.run_no_limits(vec![MontyObject::int(41)]).unwrap();
+/// assert_eq!(result, MontyObject::int(42));
 /// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MontyRun {
@@ -111,7 +111,7 @@ impl MontyRun {
     /// let code = "from datetime import date\ndate.today().year".to_owned();
     /// let clock = HostClock::Fixed { unix_seconds: 1_700_000_000, microsecond: 0, local_offset_seconds: 0 };
     /// let runner = MontyRun::new(code, "today.py", vec![], CompileOptions::default()).unwrap().with_host_clock(clock);
-    /// assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::Int(2023));
+    /// assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::int(2023));
     /// ```
     #[must_use]
     pub fn with_host_clock(mut self, clock: HostClock) -> Self {
@@ -189,7 +189,7 @@ impl MontyRun {
     /// # Errors
     /// Returns [`MontyException`] if:
     /// - The number of inputs doesn't match the expected count
-    /// - An input value is invalid (e.g., [`MontyObject::Repr`])
+    /// - An input value is invalid (e.g. a [`MontyNode::Repr`](monty_types::MontyNode::Repr) node)
     /// - A runtime error occurs during execution
     ///
     /// # Panics
@@ -740,7 +740,7 @@ impl Executor {
 
             // Convert return value while VM is still alive (needs access to interns).
             // Non-REPL: single source, so every frame resolves to `executor.code`.
-            let py_object = frame_exit_to_object(frame_exit_result, &mut vm)
+            let value = frame_exit_to_object(frame_exit_result, &mut vm)
                 .map_err(|e| e.into_python_exception(&executor.interns, |_| Some(&*executor.code)))?;
 
             // Drop globals with proper ref counting
@@ -749,7 +749,7 @@ impl Executor {
             let allocations_since_gc = vm.heap.get_allocations_since_gc();
 
             Ok(RefCountOutput {
-                py_object,
+                value,
                 counts,
                 unreachable,
                 heap_count,
@@ -767,7 +767,7 @@ impl Executor {
         (0..self.namespace_size()).map(|_| Value::Undefined).collect()
     }
 
-    /// Converts `MontyObject` inputs to `Value`s and writes them into the VM's globals.
+    /// Converts `MontyObject` inputs to heap `Value`s and writes them into the VM's globals.
     ///
     /// This runs with the VM alive so that `to_value` has access to the full VM context.
     /// On error partway through, the VM's `Drop` impl will drain globals and
@@ -797,7 +797,7 @@ pub(crate) fn default_clock() -> HostClock {
     HostClock::System
 }
 
-/// Converts module/frame exit results into plain `MontyObject` outputs.
+/// Converts module/frame exit results into exported `MontyObject` outputs.
 ///
 /// Used by non-iterative execution paths: lookups are answered as no host
 /// would (see [`answer_unserved_lookups`]) and the remaining suspendable
@@ -807,7 +807,7 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
     // so one `drop_with` releases whatever the exit owns, fields added later
     // included.
     let exit = match answer_unserved_lookups(frame_exit_result, vm)? {
-        FrameExit::Return(return_value) => return Ok(MontyObject::new(return_value, vm)),
+        FrameExit::Return(return_value) => return Ok(MontyObject::export(return_value, vm)),
         exit => exit,
     };
     let error: RunError = match &exit {
@@ -843,7 +843,7 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
 #[cfg(feature = "ref-count-return")]
 #[derive(Debug)]
 pub struct RefCountOutput {
-    pub py_object: MontyObject,
+    pub value: MontyObject,
     pub counts: ahash::AHashMap<String, usize>,
     /// Live heap entries reachable from no named variable, described as
     /// `"<type> (id N)"`. Non-empty means the run leaked: a missed `drop_with`

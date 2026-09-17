@@ -13,7 +13,8 @@ use std::{mem, ops::ControlFlow, sync::Arc};
 
 use ahash::AHashMap;
 use monty_types::{
-    ExcType, HostClock, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker,
+    CallArgs, ExcType, HostClock, MontyException, MontyGraph, MontyObject, MontyUuid, NamedValues, NodeId,
+    OsFunctionCall, PrintWriter, ResourceTracker,
 };
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
@@ -21,11 +22,12 @@ use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErr
 use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::{FrameExit, VM, VMSnapshot},
+    defer_drop,
     exception_private::{ExcTypeExt, RunError},
     heap::{DropWithContext, Heap, HeapData, HeapReader},
     intern::Interns,
     name_map::NameMap,
-    object_bridge::MontyObjectExt,
+    object_bridge::{MontyGraphExt, MontyObjectExt},
     run::{CompileOptions, DEFAULT_CWD, Executor, ReplSession, default_clock},
     run_progress::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
@@ -193,18 +195,22 @@ impl MontyRepl {
     pub fn feed_start(
         self,
         code: &str,
-        inputs: Vec<(String, MontyObject)>,
+        inputs: impl Into<NamedValues>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
         let mut this = self;
         if code.is_empty() {
             return Ok(ReplProgress::Complete {
                 repl: this,
-                value: MontyObject::None,
+                value: MontyObject::none(),
             });
         }
 
-        let (input_names, input_values): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
+        let NamedValues {
+            graph: input_values,
+            names,
+        } = inputs.into();
+        let (input_names, input_ids): (Vec<_>, Vec<_>) = names.into_iter().unzip();
 
         let input_script_name = this.next_input_script_name();
         // Preserve this snippet's source (see `feed_run` for rationale).
@@ -241,7 +247,7 @@ impl MontyRepl {
             vm.random = mem::take(&mut this.random);
 
             // Inject inputs with VM alive
-            if let Err(error) = inject_inputs_into_vm(executor, input_values, &mut vm) {
+            if let Err(error) = inject_inputs_into_vm(executor, input_values, &input_ids, &mut vm) {
                 reclaim_vm_state(&mut this.globals, &mut this.cwd, &mut this.random, &mut vm);
                 return Err(error);
             }
@@ -279,14 +285,18 @@ impl MontyRepl {
     pub fn feed_run(
         &mut self,
         code: &str,
-        inputs: Vec<(String, MontyObject)>,
+        inputs: impl Into<NamedValues>,
         print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         if code.is_empty() {
-            return Ok(MontyObject::None);
+            return Ok(MontyObject::none());
         }
 
-        let (input_names, input_values): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
+        let NamedValues {
+            graph: input_values,
+            names,
+        } = inputs.into();
+        let (input_names, input_ids): (Vec<_>, Vec<_>) = names.into_iter().unzip();
 
         let input_script_name = self.next_input_script_name();
         // Preserve this snippet's source before anything can fail, so later
@@ -323,7 +333,7 @@ impl MontyRepl {
             );
             vm.random = mem::take(&mut self.random);
 
-            if let Err(e) = inject_inputs_into_vm(executor, input_values, &mut vm) {
+            if let Err(e) = inject_inputs_into_vm(executor, input_values, &input_ids, &mut vm) {
                 reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut self.random, &mut vm);
                 return Err(e);
             }
@@ -358,9 +368,16 @@ impl MontyRepl {
     pub fn call_function(
         &mut self,
         name: &str,
-        args: Vec<MontyObject>,
+        args: impl Into<CallArgs>,
         print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
+        let args: CallArgs = args.into();
+        // The synthetic call site is `name(*args)`: keyword arguments have
+        // no slot, so they are refused rather than silently dropped.
+        if !args.kwarg_ids.is_empty() {
+            return Err(ExcType::type_error("call_function() takes positional arguments only")
+                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
+        }
         let Some(name_id) = self.interns.get_string_id_by_name(name) else {
             return Err(RunError::from(ExcType::name_error(name))
                 .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
@@ -381,7 +398,7 @@ impl MontyRepl {
             name,
             name_id,
             slot_idx,
-            args.len(),
+            args.arg_ids.len(),
             &input_script_name,
             self.global_names.clone(),
             &mut self.interns,
@@ -410,7 +427,6 @@ impl MontyRepl {
             let result = match convert_args(args, vm) {
                 Ok(args) => {
                     let (args, kwargs) = args.into_parts();
-                    debug_assert!(kwargs.is_empty(), "host function calls only have positional arguments");
                     kwargs.drop_with(vm);
                     let args_tuple = allocate_tuple(args.collect(), vm.heap);
                     let args_slot = executor.input_slots[0].index();
@@ -420,7 +436,7 @@ impl MontyRepl {
                     let mut run_result = vm.run_module();
                     loop {
                         run_result = match run_result {
-                            Ok(FrameExit::Return(value)) => break Ok(MontyObject::new(value, vm)),
+                            Ok(FrameExit::Return(value)) => break Ok(MontyObject::export(value, vm)),
                             // No host answers inside a host-driven call, so the
                             // lookup is `Undefined`: `hasattr()` is False,
                             // `getattr()` yields its default.
@@ -664,10 +680,8 @@ impl ReplProgress {
 pub struct ReplFunctionCall {
     /// The name of the function or method being called.
     pub function_name: String,
-    /// The positional arguments passed to the function.
-    pub args: Vec<MontyObject>,
-    /// The keyword arguments passed to the function (key, value pairs).
-    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    /// The arguments: one arena holding every positional and keyword value.
+    pub args: CallArgs,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
     /// Uuid of the routed receiver — an instance, or a class type (a
@@ -1223,20 +1237,23 @@ fn reclaim_vm_state(globals: &mut Vec<Value>, cwd: &mut Arc<str>, random: &mut R
 
 /// Injects input values into the VM's global namespace slots.
 ///
-/// Converts each `MontyObject` to a `Value` while the VM is alive, then
-/// stores it at the namespace slot that `Executor::new_repl_snippet`
-/// pre-resolved for the corresponding input name. Each store is O(1) — the
+/// Imports the inputs' shared arena while the VM is alive, then stores each
+/// input at the namespace slot that `Executor::new_repl_snippet` pre-resolved
+/// for its name (`input_ids` are in that order). Each store is O(1) — the
 /// per-input name → slot lookup happens once at snippet construction, not
 /// here on the call path.
 fn inject_inputs_into_vm(
     executor: &Executor,
-    input_values: Vec<MontyObject>,
+    input_values: MontyGraph,
+    input_ids: &[NodeId],
     vm: &mut VM<'_>,
 ) -> Result<(), MontyException> {
-    for (&slot, obj) in executor.input_slots.iter().zip(input_values) {
-        let value = obj
-            .to_value(vm)
-            .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
+    let values = input_values
+        .to_values(vm)
+        .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
+    defer_drop!(values, vm);
+    for (&slot, id) in executor.input_slots.iter().zip(input_ids) {
+        let value = values[id.index()].clone_with_heap(vm.heap);
         let old = mem::replace(&mut vm.globals[slot.index()], value);
         old.drop_with(vm);
     }
@@ -1272,14 +1289,12 @@ fn build_repl_progress(
         ConvertedExit::FunctionCall {
             function_name,
             args,
-            kwargs,
             call_id,
             object_id,
             allow_eager_await,
         } => Ok(ReplProgress::FunctionCall(ReplFunctionCall {
             function_name,
             args,
-            kwargs,
             call_id,
             object_id,
             allow_eager_await,
@@ -1319,51 +1334,32 @@ fn build_repl_progress(
     }
 }
 
-/// Converts `Vec<MontyObject>` to internal `ArgValues` for function calls.
-fn convert_args(args: Vec<MontyObject>, vm: &mut VM<'_>) -> Result<ArgValues, MontyException> {
-    match args.len() {
-        0 => Ok(ArgValues::Empty),
-        1 => {
-            let value = args
-                .into_iter()
-                .next()
-                .expect("checked len")
-                .to_value(vm)
-                .map_err(|e| MontyException::runtime_error(format!("invalid argument type: {e}")))?;
-            Ok(ArgValues::One(value))
-        }
+/// Converts host call arguments to internal `ArgValues` for function calls;
+/// `call_function` has already refused keyword arguments.
+fn convert_args(args: CallArgs, vm: &mut VM<'_>) -> Result<ArgValues, MontyException> {
+    let values = args
+        .graph
+        .to_values(vm)
+        .map_err(|e| MontyException::runtime_error(format!("invalid argument type: {e}")))?;
+    defer_drop!(values, vm);
+    let mut positional: Vec<Value> = args
+        .arg_ids
+        .iter()
+        .map(|id| values[id.index()].clone_with_heap(vm.heap))
+        .collect();
+    Ok(match positional.len() {
+        0 => ArgValues::Empty,
+        1 => ArgValues::One(positional.pop().expect("checked len")),
         2 => {
-            let mut iter = args.into_iter();
-            let a = iter
-                .next()
-                .expect("checked len")
-                .to_value(vm)
-                .map_err(|e| MontyException::runtime_error(format!("invalid argument type: {e}")))?;
-            match iter.next().expect("checked len").to_value(vm) {
-                Ok(b) => Ok(ArgValues::Two(a, b)),
-                Err(e) => {
-                    a.drop_with(&mut *vm);
-                    Err(MontyException::runtime_error(format!("invalid argument type: {e}")))
-                }
-            }
+            let b = positional.pop().expect("checked len");
+            let a = positional.pop().expect("checked len");
+            ArgValues::Two(a, b)
         }
-        _ => {
-            let mut values = Vec::with_capacity(args.len());
-            for arg in args {
-                match arg.to_value(vm) {
-                    Ok(value) => values.push(value),
-                    Err(e) => {
-                        values.drain(..).drop_with(&mut *vm);
-                        return Err(MontyException::runtime_error(format!("invalid argument type: {e}")));
-                    }
-                }
-            }
-            Ok(ArgValues::ArgsKargs {
-                args: values,
-                kwargs: KwargsValues::Empty,
-            })
-        }
-    }
+        _ => ArgValues::ArgsKargs {
+            args: positional,
+            kwargs: KwargsValues::Empty,
+        },
+    })
 }
 
 /// Whether a session global should be surfaced as a "function" by

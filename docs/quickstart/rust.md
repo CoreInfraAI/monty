@@ -162,8 +162,8 @@ fib(x)
 "#;
 
 let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
-let result = runner.run(vec![MontyObject::Int(10)], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
-assert_eq!(result, MontyObject::Int(55));
+let result = runner.run(vec![MontyObject::int(10)], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
+assert_eq!(result, MontyObject::int(55));
 ```
 
 Errors come back as [`MontyException`](../api/rust/monty-types.md#montyexception), with a traceback matching what CPython would produce.
@@ -201,7 +201,7 @@ use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 let code = "from datetime import date\ndate.today().year";
 let runner = MontyRun::new(code.to_owned(), "today.py", vec![], CompileOptions::default()).unwrap();
 let year = runner.run(vec![], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
-assert!(matches!(year, MontyObject::Int(y) if y >= 2026));
+assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
 ```
 
 `with_host_clock` changes that: `HostClock::Denied` takes the clock away, for embedders who would rather sandboxed code
@@ -226,18 +226,18 @@ let code = "data = get_data(3)\ndata * 2";
 let runner = MontyRun::new(code.to_owned(), "main.py", vec!["get_data".to_owned()], CompileOptions::default()).unwrap();
 
 // pass the external function in as an input
-let get_data = MontyObject::Function { name: "get_data".to_owned(), docstring: None };
+let get_data = MontyObject::function("get_data".to_owned(), None);
 let progress = runner.start(vec![get_data], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
 
 // execution pauses at the `get_data(3)` call
 let RunProgress::FunctionCall(call) = progress else { panic!("expected a function call") };
 assert_eq!(call.function_name, "get_data");
-assert_eq!(call.args, vec![MontyObject::Int(3)]);
+assert_eq!(call.args.arg(0).unwrap(), MontyObject::int(3));
 
 // the host computes the result and resumes
-let progress = call.resume(MontyObject::Int(21), PrintWriter::Stdout).unwrap();
+let progress = call.resume(MontyObject::int(21), PrintWriter::Stdout).unwrap();
 let RunProgress::Complete(result) = progress else { panic!("expected completion") };
-assert_eq!(result, MontyObject::Int(42));
+assert_eq!(result, MontyObject::int(42));
 ```
 
 Async host functions work the same way: [`FunctionCall::resume_pending`](../api/rust/monty.md#functioncall) continues with a pending future the sandboxed
@@ -272,7 +272,7 @@ let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
 // later, restore and keep going
 let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else { panic!() };
 let result = restored.feed_run("x + 2", vec![], PrintWriter::Stdout).unwrap();
-assert_eq!(result, MontyObject::Int(42));
+assert_eq!(result, MontyObject::int(42));
 ```
 
 ### Other pieces
@@ -284,4 +284,4 @@ assert_eq!(result, MontyObject::Int(42));
 - [`RunProgress::OsCall`](../api/rust/monty.md#runprogress) and [`RunProgress::NameLookup`](../api/rust/monty.md#runprogress) — the filesystem/`os` operations and undefined-name reads the host
     intercepts.
 - [`FunctionCall::object_id`](../api/rust/monty.md#functioncall) and [`NameLookup::object_id`](../api/rust/monty.md#namelookup) — set for method calls and lazy attribute lookups routed to a
-    host object sent as [`MontyObject::ClassInstance`](../api/rust/monty-types.md#montyobject) or [`MontyObject::Type`](../api/rust/monty-types.md#montyobject); the receiver is not in `args`.
+    host object sent as a [`MontyNode::ClassInstance`](../api/rust/monty-types.md#montynode) or [`MontyNode::ClassType`](../api/rust/monty-types.md#montynode) node; the receiver is not in `args`.
