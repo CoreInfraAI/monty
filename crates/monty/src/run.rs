@@ -38,6 +38,8 @@ use crate::{
 /// - **Iterative execution**: Use [`start`](Self::start) to start execution which will pause at external function calls and
 ///   can be resumed later
 ///
+/// Deserialization requires trusted, unmodified state; see [`crate::Dump::load`].
+///
 /// # Example
 /// ```
 /// use monty::MontyRun;
@@ -55,7 +57,7 @@ use crate::{
 /// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MontyRun {
-    /// The underlying executor containing parsed AST and interns.
+    /// The underlying executor containing compiled bytecode and interns.
     executor: Executor,
 }
 

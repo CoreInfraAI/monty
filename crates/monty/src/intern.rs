@@ -22,8 +22,6 @@ use ahash::AHashMap;
 use num_bigint::BigInt;
 use strum::{EnumString, FromRepr, IntoStaticStr};
 
-#[cfg(feature = "test-hooks")]
-use crate::function::FunctionMetadataFault;
 use crate::{
     function::Function,
     hash::{HashValue, RESERVED_STRING_HASHES, WithHash, hash_python_str},
@@ -2281,17 +2279,6 @@ impl Interns {
     #[inline]
     pub fn get_function(&self, id: FunctionId) -> &Function {
         self.functions.get(id.index()).expect("Function not found")
-    }
-
-    /// Injects `fault` into the named function's metadata.
-    #[cfg(feature = "test-hooks")]
-    pub(crate) fn corrupt_function_metadata_for_tests(&mut self, name: &str, fault: FunctionMetadataFault) {
-        let index = self
-            .functions
-            .iter()
-            .position(|function| self.get_str(function.name.name_id) == name)
-            .unwrap_or_else(|| panic!("test function '{name}' not found"));
-        self.functions[index].corrupt_metadata_for_tests(fault);
     }
 
     /// Returns the Python hash for an interned string.
