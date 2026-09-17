@@ -2176,13 +2176,11 @@ impl<'h> VM<'h> {
             .for_each(|value| value.drop_with(&mut *self.heap));
     }
 
-    /// Cleans up all frames and stack values for the current task.
-    ///
-    /// Used when a task completes or fails and we need to switch to another task.
-    /// Drains the stack with proper `drop_with`, then leaves a non-executing
-    /// parked frame until another task is loaded.
+    /// Drops the current task's operand and exception stacks and discards its frames.
+    /// Leaves a parked frame until another task is activated, or the VM is dropped.
     pub(super) fn cleanup_current_task(&mut self) {
         self.stack.drain(..).drop_with(self.heap);
+        self.exception_stack.drain(..).drop_with(self.heap);
         self.suspended_frames.clear();
         let code = self.module_code.unwrap_or(self.current_frame.code);
         self.current_frame = CallFrame::new_parked(code);
@@ -2597,7 +2595,6 @@ impl Drop for VM<'_> {
     fn drop(&mut self) {
         release_pending_effect(self.pending_effect.take(), self.heap);
         self.pending_lookup_effect.take().drop_with(self.heap);
-        self.exception_stack.drain(..).drop_with(self.heap);
         self.cleanup_current_task();
         self.scheduler.cleanup(self.heap);
         self.globals.drain(..).drop_with(self.heap);

@@ -840,7 +840,8 @@ pub(crate) fn resume_with_result(
 ) -> Result<FrameExit, RunError> {
     if let Some(call_id) = eager_call_id {
         vm.add_pending_call(CallId::new(call_id));
-        vm.resume_with_resolved_futures(vec![(call_id, result)])
+        vm.apply_future_results(vec![(call_id, result)])?;
+        vm.run_external()
     } else {
         match result {
             ExtFunctionResult::Return(obj) => vm.resume(obj),
