@@ -13,7 +13,7 @@ use monty_proto::{
     os_call_from_proto, pb,
     worker::{Child, EventSink, HandleOutcome, protocol_violation},
 };
-use monty_types::{CallArgs, ExcType, MONTY_VERSION, MontyException, MontyNode, MontyUuid};
+use monty_types::{CallArgs, ExcType, MONTY_VERSION, MontyException, MontyNode, MontyUuid, memory_limit_with_headroom};
 
 #[expect(
     clippy::same_length_and_capacity,
@@ -52,7 +52,8 @@ impl Guest for Component {
             let mut result = dispatch(child, request);
             let budget = child.session_budget();
             result.max_suspensions = budget.max_suspensions.map(|limit| limit as u64);
-            let allocator_ready = monty_alloc::set_limit(budget.max_memory, budget.type_check);
+            let hard_memory_limit = memory_limit_with_headroom(budget.max_memory, budget.type_check);
+            let allocator_ready = monty_alloc::set_hard_limit(hard_memory_limit);
             (result, allocator_ready)
         });
         if let Err(error) = allocator_ready {
