@@ -30,7 +30,7 @@ pub use resume::{
 };
 
 use crate::{
-    pb,
+    BudgetVec, pb,
     wire::{WireArena, graph_error},
 };
 
@@ -94,7 +94,7 @@ impl TryFrom<pb::Complete> for MontyObject {
 
 /// Splits named inputs into `NamedRef`s and the arena they index.
 #[must_use]
-pub fn named_values_to_proto(inputs: NamedValues) -> (Vec<pb::NamedRef>, WireArena) {
+pub fn named_values_to_proto(inputs: NamedValues) -> (BudgetVec<pb::NamedRef>, WireArena) {
     let refs = inputs
         .names
         .into_iter()
@@ -105,7 +105,7 @@ pub fn named_values_to_proto(inputs: NamedValues) -> (Vec<pb::NamedRef>, WireAre
 
 /// Validates decoded named inputs against their arena.
 pub fn named_values_from_proto(
-    inputs: Vec<pb::NamedRef>,
+    inputs: impl IntoIterator<Item = pb::NamedRef>,
     values: Option<WireArena>,
 ) -> Result<NamedValues, ProtoConvertError> {
     let named = NamedValues {

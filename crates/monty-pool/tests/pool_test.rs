@@ -1623,7 +1623,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
     replies.extend(framed(&child_event(pb::child_event::Kind::Shutdown(
         pb::ShutdownDump {
-            dump: Some(b"a dump the child minted itself".to_vec()),
+            dump: Some(b"a dump the child minted itself".to_vec().into()),
         },
     ))));
     let replies_path = dir.path().join("replies.bin");
@@ -1644,7 +1644,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1688,7 +1688,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1736,7 +1736,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
