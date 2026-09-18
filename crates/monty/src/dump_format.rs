@@ -32,6 +32,13 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// between releases is unnecessary and can lead to confusion.
 pub const DUMP_VERSION: u16 = 11;
 
+/// Set to [`DUMP_VERSION`], the current dump version, until this crate can load older dumps.
+pub const MIN_SUPPORTED_DUMP_VERSION: u16 = DUMP_VERSION;
+
+// The supported range must be non-empty, and must exclude zero
+const _: () = assert!(MIN_SUPPORTED_DUMP_VERSION >= 1);
+const _: () = assert!(MIN_SUPPORTED_DUMP_VERSION <= DUMP_VERSION);
+
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
 
@@ -125,10 +132,13 @@ impl Dump {
     /// Successful decoding does not authenticate or fully validate a snapshot.
     /// The same contract applies to direct serde deserialization.
     ///
+    /// Accepts [`MIN_SUPPORTED_DUMP_VERSION`]`..=`[`DUMP_VERSION`], which is one
+    /// version wide until a compatibility mechanism lowers the floor.
+    ///
     /// # Errors
-    /// Returns [`DumpError`] for a dump this build cannot read — most usefully
-    /// [`DumpError::VersionMismatch`], which names both versions so a host can
-    /// tell a stale snapshot from a corrupt one.
+    /// Returns [`DumpError`] for a dump this build cannot read. The version
+    /// variants name the bound the dump missed, so a host can tell a stale
+    /// snapshot from one written by a build it should be reading with.
     pub fn load(bytes: &[u8]) -> Result<Self, DumpError> {
         let Some(header) = bytes.get(..HEADER_LEN) else {
             return Err(DumpError::NotADump);
@@ -136,10 +146,15 @@ impl Dump {
         let version = u16::from_le_bytes([header[MAGIC.len()], header[MAGIC.len() + 1]]);
         if &header[..MAGIC.len()] != MAGIC {
             Err(DumpError::NotADump)
-        } else if version != DUMP_VERSION {
-            Err(DumpError::VersionMismatch {
+        } else if version < MIN_SUPPORTED_DUMP_VERSION {
+            Err(DumpError::VersionTooOld {
                 found: version,
-                expected: DUMP_VERSION,
+                min_supported: MIN_SUPPORTED_DUMP_VERSION,
+            })
+        } else if version > DUMP_VERSION {
+            Err(DumpError::VersionTooNew {
+                found: version,
+                max_supported: DUMP_VERSION,
             })
         } else {
             let (value, remainder) = postcard::take_from_bytes(&bytes[HEADER_LEN..]).map_err(DumpError::Payload)?;
@@ -182,19 +197,36 @@ pub enum SessionRef<'a> {
 
 /// Why a dump could not be restored.
 ///
-/// Distinguishes the three failures a host cares about, because they need
-/// different responses: an old snapshot should be discarded and rebuilt, while
-/// a payload error on a current-version dump means corruption.
+/// The two version failures are separate variants because they need opposite
+/// responses: a too-old dump is dead and its session must be rebuilt by
+/// replaying feeds, while a too-new one is intact and wants a newer reader.
 #[derive(Debug, PartialEq, Eq)]
 pub enum DumpError {
     /// Too short to hold a header, or missing the magic prefix.
     NotADump,
-    /// Written by a build using a different dump format version.
-    VersionMismatch {
+    /// Written by a build older than the oldest this one reads.
+    VersionTooOld {
         /// Version the dump was written with.
         found: u16,
-        /// Version this build reads.
-        expected: u16,
+        /// Oldest version this build reads.
+        min_supported: u16,
+    },
+    /// Written by a newer build, so the bytes are worth keeping — a build at or
+    /// above `found` reads them.
+    VersionTooNew {
+        /// Version the dump was written with.
+        found: u16,
+        /// Newest version this build reads.
+        max_supported: u16,
+    },
+    /// A version this build reads, holding something it cannot load — reserved
+    /// for a compatibility mechanism and not produced today. `reason` names what
+    /// blocked it; the remedy matches [`Self::VersionTooOld`].
+    Unsupported {
+        /// Version the dump was written with.
+        found: u16,
+        /// What this build could not load, for a host to log.
+        reason: String,
     },
     /// Header was valid but the postcard payload did not decode.
     Payload(postcard::Error),
@@ -204,8 +236,20 @@ impl fmt::Display for DumpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotADump => write!(f, "not a monty dump"),
-            Self::VersionMismatch { found, expected } => {
-                write!(f, "dump format version {found}, this build reads {expected}")
+            Self::VersionTooOld { found, min_supported } => {
+                write!(
+                    f,
+                    "dump format version {found} is older than {min_supported}, the oldest this build reads"
+                )
+            }
+            Self::VersionTooNew { found, max_supported } => {
+                write!(
+                    f,
+                    "dump format version {found} is newer than {max_supported}, the newest this build reads"
+                )
+            }
+            Self::Unsupported { found, reason } => {
+                write!(f, "dump format version {found} is unsupported: {reason}")
             }
             Self::Payload(err) => write!(f, "malformed dump payload: {err}"),
         }

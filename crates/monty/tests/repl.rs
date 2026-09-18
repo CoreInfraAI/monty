@@ -7,8 +7,8 @@ use std::fmt::Write;
 
 use insta::assert_snapshot;
 use monty::{
-    DUMP_VERSION, Dump, DumpError, MontyRepl, ReplContinuationMode, ReplProgress, ReplStartError, Session, SessionRef,
-    detect_repl_continuation_mode, dump,
+    DUMP_VERSION, Dump, DumpError, MIN_SUPPORTED_DUMP_VERSION, MontyRepl, ReplContinuationMode, ReplProgress,
+    ReplStartError, Session, SessionRef, detect_repl_continuation_mode, dump,
 };
 use monty_types::{
     CallArgs, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult,
@@ -60,9 +60,47 @@ fn round_trip_progress(progress: &ReplProgress) -> ReplProgress {
     }
 }
 
+/// Only the `Display` string reaches a Python or JavaScript host — the worker
+/// stringifies `DumpError` into a `RuntimeError` message at the boundary — so
+/// every variant's wording is pinned here, including `Unsupported`, which has no
+/// producer until a compatibility mechanism lands. Literal versions rather than
+/// `DUMP_VERSION` keep the snapshots stable across a bump.
+#[test]
+fn dump_error_messages_are_stable() {
+    assert_snapshot!(DumpError::NotADump.to_string(), @"not a monty dump");
+    assert_snapshot!(
+        DumpError::VersionTooOld {
+            found: 7,
+            min_supported: 9,
+        }
+        .to_string(),
+        @"dump format version 7 is older than 9, the oldest this build reads"
+    );
+    assert_snapshot!(
+        DumpError::VersionTooNew {
+            found: 12,
+            max_supported: 9,
+        }
+        .to_string(),
+        @"dump format version 12 is newer than 9, the newest this build reads"
+    );
+    assert_snapshot!(
+        DumpError::Unsupported {
+            found: 7,
+            reason: "`Heap` changed in version 9".to_string(),
+        }
+        .to_string(),
+        @"dump format version 7 is unsupported: `Heap` changed in version 9"
+    );
+    assert_snapshot!(
+        DumpError::Payload(postcard::Error::DeserializeBadEncoding).to_string(),
+        @"malformed dump payload: The original data was not well encoded"
+    );
+}
+
 /// The header must reject anything this build cannot read, and each rejection
-/// must say which of the three it was — a stale snapshot needs rebuilding, a
-/// corrupt one needs investigating.
+/// must say which kind it was — a stale snapshot needs rebuilding, one from a
+/// newer build needs a newer reader, a corrupt one needs investigating.
 #[test]
 fn dump_header_rejects_incompatible_data() {
     let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
@@ -79,14 +117,25 @@ fn dump_header_rejects_incompatible_data() {
     wrong_magic[0] = b'X';
     assert_eq!(Dump::load(&wrong_magic).unwrap_err(), DumpError::NotADump);
 
-    let previous_version = DUMP_VERSION - 1;
+    let previous_version = MIN_SUPPORTED_DUMP_VERSION - 1;
     let mut wrong_version = bytes.clone();
     wrong_version[6..8].copy_from_slice(&previous_version.to_le_bytes());
     assert_eq!(
         Dump::load(&wrong_version).unwrap_err(),
-        DumpError::VersionMismatch {
+        DumpError::VersionTooOld {
             found: previous_version,
-            expected: DUMP_VERSION
+            min_supported: MIN_SUPPORTED_DUMP_VERSION
+        }
+    );
+
+    // the other side of the range: intact bytes this build is simply too old for
+    let next_version = DUMP_VERSION + 1;
+    wrong_version[6..8].copy_from_slice(&next_version.to_le_bytes());
+    assert_eq!(
+        Dump::load(&wrong_version).unwrap_err(),
+        DumpError::VersionTooNew {
+            found: next_version,
+            max_supported: DUMP_VERSION
         }
     );
 
