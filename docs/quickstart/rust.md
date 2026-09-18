@@ -38,6 +38,12 @@ Custom OS handlers can use `monty_types::normalize_virtual_path` after validatin
 It shares the mounts' lexical POSIX normalization; see [filesystem callbacks](../filesystem.md#working-directory)
 for validation order and access checks.
 
+Build inputs with [`MontyObject`](../api/rust/monty-types.md#montyobject) constructors and inspect them with `as_ref()`.
+The builders on [`CallArgs`](../api/rust/monty-types.md#callargs) and [`NamedValues`](../api/rust/monty-types.md#namedvalues)
+accept owned values; their iterators return [`ObjectRef`](../api/rust/monty-types.md#objectref) views.
+Representation APIs under [`monty_types::unstable`](../api/rust/monty-types.md#unstable)
+carry no API compatibility guarantee.
+
 ## Two ways to run Monty
 
 - **[`monty-pool`](../api/rust/monty-pool.md)** runs the interpreter only in `monty` worker subprocesses.
@@ -292,10 +298,11 @@ assert_eq!(result, MontyObject::int(42));
 ### Other pieces
 
 - [`MontyRepl`](../api/rust/monty.md#montyrepl) — feed code snippet by snippet with state persisting between snippets.
-- The `fs` module — mount host directories into the sandbox at virtual paths, with path resolution hardened against
+- [`monty-fs`](../api/rust/monty-fs.md) — mount host directories into the sandbox at virtual paths, with path resolution hardened against
     escapes.
     See [filesystem access](../filesystem.md).
 - [`RunProgress::OsCall`](../api/rust/monty.md#runprogress) and [`RunProgress::NameLookup`](../api/rust/monty.md#runprogress) — the filesystem/`os` operations and undefined-name reads the host
     intercepts.
-- [`FunctionCall::object_id`](../api/rust/monty.md#functioncall) and [`NameLookup::object_id`](../api/rust/monty.md#namelookup) — set for method calls and lazy attribute lookups routed to a
-    host object sent as a [`MontyNode::ClassInstance`](../api/rust/monty-types.md#montynode) or [`MontyNode::ClassType`](../api/rust/monty-types.md#montynode) node; the receiver is not in `args`.
+- [`FunctionCall::object_id`](../api/rust/monty.md#functioncall) and [`NameLookup::object_id`](../api/rust/monty.md#namelookup)
+    identify the host receiver for routed calls and lookups, including class construction via `__call__`.
+    Plain calls and lookups carry `None`.

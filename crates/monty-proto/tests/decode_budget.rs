@@ -13,7 +13,10 @@ use monty_proto::{
     test_util::{push_reserved, reserve_with_overhead},
     with_decode_budget,
 };
-use monty_types::{ClassTypeNode, MontyNode, MontyUuid, NodeId};
+use monty_types::{
+    MontyUuid,
+    unstable::{ClassTypeNode, MontyNode, NodeId},
+};
 use num_bigint::{BigInt, Sign};
 use prost::{
     DecodeError, Message,

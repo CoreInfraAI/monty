@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use monty_types::{
     GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
-    PathStringDataArgs, RenameCallArgs, UrandomArgs, sleep_duration,
+    PathStringDataArgs, RenameCallArgs, UrandomArgs, sleep_duration, unstable,
 };
 
 use crate::{
@@ -81,10 +81,11 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
             dst: a.dst.into_string(),
         }),
         OsFunctionCall::Getenv(a) => {
-            values = Some(WireArena::new(a.default.graph));
+            let (graph, root) = unstable::into_graph_parts(a.default);
+            values = Some(WireArena::new(graph));
             Call::Getenv(os_call::Getenv {
                 key: a.key,
-                default: a.default.root.0,
+                default: root.0,
             })
         }
         OsFunctionCall::GetEnviron => Call::GetEnviron(Unit {}),

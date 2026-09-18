@@ -1,6 +1,6 @@
 //! Extern-mapped protobuf containers that decode directly into domain references.
 
-use monty_types::NodeId;
+use monty_types::unstable::NodeId;
 use prost::{
     DecodeError, Message,
     bytes::{Buf, BufMut},
