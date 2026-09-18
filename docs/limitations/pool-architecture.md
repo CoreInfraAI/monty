@@ -388,6 +388,17 @@ properties that real CPython does not provide, per the caveat above.
     snapshot may be resumed at most once (a second resume raises
     `RuntimeError`), and feeding while suspended raises. This differs from the
     pre-subprocess in-process API, where a snapshot owned freely-copyable state.
+- **Manual snapshot handlers do not inherit the suspension's tracing context automatically.**
+    In Python, [`snapshot.trace_context()`][pydantic_monty.FunctionSnapshot.trace_context] returns an OpenTelemetry
+    `Context` for `context.attach()` / `detach()`, not a context manager.
+    It requires `opentelemetry-api`; calling it without that package raises `ImportError`.
+    In JavaScript, pass `snapshot.traceContext()` to OpenTelemetry's `context.with()`.
+    Both methods preserve context entries captured at feed/load entry, not those of the later handler.
+    Context is not serialized; restoring captures the restoring caller's context instead.
+    Calls after resume raise, but previously returned contexts remain usable without keeping the span open.
+    Without Monty tracing, including on Browser/WASM, the methods return the captured context unchanged.
+    If JavaScript context composition fails, `traceContext()` returns the captured context and reports the error
+    through OpenTelemetry's `diag.warn`; disabled tracing does not produce a warning.
 - **Coroutine calls do not always produce a future snapshot.** When a call (a host function, or `asyncio.sleep`) is
     immediately awaited and no other sandbox task is runnable or external future is pending, `allow_eager_await` is true
     (`allowEagerAwait` in JavaScript).
