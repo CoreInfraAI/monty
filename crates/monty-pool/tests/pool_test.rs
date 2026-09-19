@@ -32,8 +32,8 @@ use monty_pool::{
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
 use monty_types::{
-    CallArgs, ExcType, MontyException, MontyObject, NameLookupResult, PrintStream, ResourceLimits, TypeCheckingConfig,
-    TypeCheckingFormat,
+    AutoOsCalls, CallArgs, DateTimeSource, ExcType, MontyException, MontyObject, NameLookupResult, PrintStream,
+    RandomSeed, RandomStart, ResourceLimits, SleepMode, TypeCheckingConfig, TypeCheckingFormat,
     unstable::{self, MontyNode},
 };
 use tokio::time::sleep;
@@ -1873,6 +1873,128 @@ async fn suspension_time_does_not_consume_the_duration_budget() {
         .await
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::string("body!".to_owned()));
+    session.finish().await.unwrap();
+}
+
+/// Clock and entropy requests cost no turns; system sleeps reach the caller capped.
+/// Fixed clocks and seeds survive `Configure` unchanged.
+#[tokio::test]
+async fn auto_os_calls_are_answered_in_the_worker() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            auto_os_calls: AutoOsCalls {
+                sleep: SleepMode::System(Duration::from_millis(10)),
+                ..AutoOsCalls::default()
+            },
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let code = "import asyncio, random, time\nfrom datetime import date\nt = time.time()\ntime.sleep(3600)\n\
+                (date.today().year >= 2026, time.time() >= t + 0.01, \
+                asyncio.run(asyncio.sleep(3600, 'woken')), 0 <= random.random() < 1)";
+    let mut event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+    let mut slept = vec![];
+    while let TurnEvent::OsCall {
+        function_name,
+        system_sleep,
+        ..
+    } = &event
+    {
+        let delay = system_sleep.expect("only the sleeps reach the caller");
+        slept.push((function_name.clone(), delay));
+        sleep(delay).await;
+        event = session
+            .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        slept,
+        vec![
+            ("system.sleep".to_owned(), Duration::from_millis(10)),
+            ("system.async_sleep".to_owned(), Duration::from_millis(10)),
+        ]
+    );
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::tuple([
+            MontyObject::bool(true),
+            MontyObject::bool(true),
+            MontyObject::string("woken"),
+            MontyObject::bool(true),
+        ])
+    );
+    session.finish().await.unwrap();
+
+    let mut session = pool
+        .checkout(&ReplConfig {
+            auto_os_calls: AutoOsCalls {
+                datetime: DateTimeSource::Fixed {
+                    unix_seconds: 1_700_000_000,
+                    microsecond: 0,
+                },
+                sleep: SleepMode::Zero,
+                random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
+                ..AutoOsCalls::default()
+            },
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    // CPython: random.seed(42); random.random()
+    let code = "import random, time\ntime.sleep(3600)\n(time.time(), random.random())";
+    let event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::tuple([
+            MontyObject::float(1_700_000_000.0),
+            MontyObject::float(0.639_426_798_457_883_7),
+        ])
+    );
+    session.finish().await.unwrap();
+}
+
+#[tokio::test]
+async fn call_host_delivers_clock_and_sleeps_as_os_calls() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            auto_os_calls: AutoOsCalls {
+                datetime: DateTimeSource::CallHost,
+                sleep: SleepMode::CallHost,
+                ..AutoOsCalls::default()
+            },
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let code = "import time
+time.sleep(1.5)
+time.time()";
+    let event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+    let TurnEvent::OsCall {
+        function_name, args, ..
+    } = event
+    else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(function_name, "time.sleep");
+    assert_eq!(args, CallArgs::from(vec![MontyObject::float(1.5)]));
+    let event = session
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+        .await
+        .unwrap();
+    let TurnEvent::OsCall { function_name, .. } = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(function_name, "time.time");
+    let event = session
+        .resume(ResumeValue::Return(MontyObject::float(7.5)), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::float(7.5));
     session.finish().await.unwrap();
 }
 

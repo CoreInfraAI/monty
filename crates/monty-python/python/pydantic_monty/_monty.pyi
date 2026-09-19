@@ -8,6 +8,7 @@ from typing_extensions import Self
 
 from . import (
     AsyncSnapshot,
+    AutoOSCalls,
     ExternalResult,
     ExternalSettledResult,
     OsHandler,
@@ -545,6 +546,7 @@ class Monty:
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
+        auto_os_calls: AutoOSCalls | None = None,
     ) -> MontySession:
         """
         Prepare a REPL session served by a dedicated worker.
@@ -583,6 +585,9 @@ class Monty:
                 before a host call and before a run ends, so this only sets
                 how far live output may lag — never what arrives, or in what
                 order.
+            auto_os_calls: Session clock, sleep and random initialization policies;
+                see `AutoOSCalls`. Defaults to the worker's clock, local zone and
+                entropy, with sleeps handled by the pool and capped at ten seconds.
         """
 
 @final
@@ -859,6 +864,7 @@ class AsyncMonty:
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
+        auto_os_calls: AutoOSCalls | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated worker.
@@ -959,6 +965,7 @@ class AsyncMontyWebsocket:
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
+        auto_os_calls: AutoOSCalls | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated remote connection.

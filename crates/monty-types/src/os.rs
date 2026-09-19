@@ -123,10 +123,16 @@ pub enum OsFunctionCall {
     /// epoch, answered with [`MontyObject::float`].
     #[strum(serialize = "time.time")]
     Time,
-    /// `time.sleep(seconds)` — the host waits, then answers with any value
-    /// (`time.sleep` discards it and evaluates to `None`).
+    /// `time.sleep(seconds)` under `SleepMode::CallHost` — the host's `os`
+    /// handler waits, then answers with any value (`time.sleep` discards it
+    /// and evaluates to `None`).
     #[strum(serialize = "time.sleep")]
     Sleep(Duration),
+    /// `time.sleep(seconds)` under `SleepMode::System`, capped at its maximum.
+    /// The host charges `max_total_sleep`, waits and returns `None` without its
+    /// `os` handler. The distinct name identifies the policy for the host.
+    #[strum(serialize = "system.sleep")]
+    SystemSleep(Duration),
     /// `asyncio.sleep(delay)` — like [`Sleep`](Self::Sleep), except the
     /// sandbox turns the answer into an awaitable, so a host that runs an
     /// event loop should answer with a future (`ExtFunctionResult::Future`)
@@ -135,18 +141,20 @@ pub enum OsFunctionCall {
     /// `result` argument itself and produces it from the `await`.
     #[strum(serialize = "asyncio.sleep")]
     AsyncSleep(Duration),
+    /// `asyncio.sleep(delay)` under `SleepMode::System`: the awaitable form of
+    /// [`SystemSleep`](Self::SystemSleep), which a host running an event loop
+    /// answers with a future it resolves once the delay elapses.
+    #[strum(serialize = "system.async_sleep")]
+    AsyncSystemSleep(Duration),
 }
 
 impl OsFunctionCall {
-    /// Whether a host may answer the call with this [`name`](Self::name) with
-    /// `ExtFunctionResult::Future` and resolve it later, letting the sandbox's
-    /// other tasks run meanwhile.
-    ///
-    /// Only `asyncio.sleep` qualifies: every other call is a value the
-    /// calling code is waiting on, so the host must answer it in place.
+    /// Whether this [`name`](Self::name) accepts `ExtFunctionResult::Future`,
+    /// letting other tasks run until the host resolves it. Only `asyncio.sleep`
+    /// qualifies, in either sleep mode; all other calls require an immediate answer.
     #[must_use]
     pub fn accepts_future(name: &str) -> bool {
-        name == "asyncio.sleep"
+        matches!(name, "asyncio.sleep" | "system.async_sleep")
     }
 
     /// Stable string name for this OS function — surfaces in
@@ -196,7 +204,9 @@ impl OsFunctionCall {
             // Unit & single-value non-FS variants.
             Self::GetEnviron | Self::DateToday | Self::Time => CallArgs::new(),
             Self::DateTimeNow(tz) => single_arg(tz.map_or(MontyNode::None, MontyNode::TimeZone)),
-            Self::Sleep(delay) | Self::AsyncSleep(delay) => single_arg(MontyNode::Float(delay.as_secs_f64())),
+            Self::Sleep(delay) | Self::SystemSleep(delay) | Self::AsyncSleep(delay) | Self::AsyncSystemSleep(delay) => {
+                single_arg(MontyNode::Float(delay.as_secs_f64()))
+            }
         }
     }
 
@@ -302,7 +312,9 @@ impl OsFunctionCall {
             | Self::Urandom(_)
             | Self::Time
             | Self::Sleep(_)
-            | Self::AsyncSleep(_) => None,
+            | Self::SystemSleep(_)
+            | Self::AsyncSleep(_)
+            | Self::AsyncSystemSleep(_) => None,
         }
     }
 
@@ -347,7 +359,9 @@ impl OsFunctionCall {
             | Self::Urandom(_)
             | Self::Time
             | Self::Sleep(_)
-            | Self::AsyncSleep(_) => (None, None),
+            | Self::SystemSleep(_)
+            | Self::AsyncSleep(_)
+            | Self::AsyncSystemSleep(_) => (None, None),
         };
         primary.into_iter().chain(dst)
     }

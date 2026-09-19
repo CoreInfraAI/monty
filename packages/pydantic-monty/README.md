@@ -278,6 +278,57 @@ with Monty(request_timeout=10) as pool:
             #> TimeoutError
 ```
 
+### Clock, sleeping and entropy
+
+By default, clock calls read the worker's clock, and unseeded `random` generators use the worker's OS entropy.
+The pool handles sleeps without an `os=` handler, capping each at `sleep_system_max` (10 seconds).
+Gathered `asyncio.sleep()` calls overlap.
+Suspending sleeps count against `max_suspensions` and `max_total_sleep_secs`, but not the execution-time limits.
+Set `checkout(auto_os_calls=...)` to change these defaults for the session:
+
+```python
+from datetime import datetime
+
+from pydantic_monty import Monty
+
+code = """
+import random, time
+from datetime import datetime
+time.sleep(3600)
+f'{datetime.now():%Y-%m-%d %H:%M} {random.random():.4f}'
+"""
+
+# datetime: 'system' (default), 'call_host' or a datetime
+# timezone: 'system' (default), 'call_host' or {'offset_seconds': int, 'name': str}
+# sleep: 'system' (default), 'call_host' or 'zero'
+# sleep_system_max: seconds per 'system' sleep; float('inf') for no cap
+# random_start: 'system' (default), 'call_host' or {'seed': int | float | str | bytes}
+with Monty() as pool:
+    with pool.checkout(
+        auto_os_calls={
+            'datetime': datetime(2026, 1, 1, 9, 30),
+            'timezone': {'offset_seconds': 3600, 'name': 'CET'},
+            'sleep': 'system',
+            'sleep_system_max': 0.5,
+            'random_start': {'seed': 42},
+        }
+    ) as session:
+        print(session.feed_run(code))
+        #> 2026-01-01 10:30 0.6394
+```
+
+A `datetime` freezes the clock and, unless `timezone` is explicit, sets the zone from its `utcoffset()` and
+`tzname()` (UTC for a naive value).
+`timezone` is a fixed offset used by naive `datetime.now()` and `date.today()`, with no IANA zone rules.
+`'zero'` skips both sleeps.
+`{'seed': s}` initializes the module generator as `random.seed(s)` would; unseeded `random.Random()` instances
+receive deterministic states derived from it.
+Sandboxed code can still reseed afterwards.
+
+`'call_host'` sends the selected calls to the `os=` handler.
+`OSAccess` answers from the host's clock and entropy, and caps waits at its `max_sleep`.
+Explicit `os.urandom()` calls always reach the handler.
+
 ### Type checking
 
 Monty bundles [ty](https://docs.astral.sh/ty/): each fed snippet can be

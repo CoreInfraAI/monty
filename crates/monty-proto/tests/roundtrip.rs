@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashMap, mem, time::Duration};
 
 use insta::assert_snapshot;
 use monty::MontyRun;
@@ -7,10 +7,11 @@ use monty_proto::{
     named_values_to_proto, os_call_from_proto, os_call_to_proto, pb,
 };
 use monty_types::{
-    CodeLoc, CompileOptions, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MAX_SLEEP_SECONDS,
-    MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues, OpenCallArgs, OsFunctionCall,
-    PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData, UrandomArgs,
+    AutoOsCalls, CodeLoc, CompileOptions, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs,
+    JsonErrorData, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
+    MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult,
+    NamedValues, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RandomSeed, RandomStart,
+    RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, StackFrame, UnicodeErrorData, UrandomArgs,
     sleep_duration, sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
@@ -564,14 +565,111 @@ fn resource_limits_round_trip() {
         gc_interval: Some(100),
         max_recursion_depth: 50,
         max_suspensions: 7,
+        max_total_sleep: Some(Duration::from_secs(30)),
     };
     let back = ResourceLimits::from(pb::ResourceLimits::from(&limits));
     assert_eq!(back.max_feed_duration, limits.max_feed_duration);
     assert_eq!(back.max_turn_duration, limits.max_turn_duration);
+    assert_eq!(back.max_total_sleep, limits.max_total_sleep);
     assert_eq!(back.max_memory, limits.max_memory);
     assert_eq!(back.gc_interval, limits.gc_interval);
     assert_eq!(back.max_recursion_depth, limits.max_recursion_depth);
     assert_eq!(back.max_suspensions, limits.max_suspensions);
+}
+
+#[test]
+fn auto_os_calls_round_trip() {
+    let seeds = [
+        RandomSeed::Int(BigInt::from(-7)),
+        RandomSeed::Int(BigInt::from(2u8).pow(70)),
+        RandomSeed::Float(1.5),
+        RandomSeed::Str("abc".to_owned()),
+        RandomSeed::Bytes(b"abc".to_vec()),
+    ];
+    for seed in seeds {
+        let calls = AutoOsCalls {
+            datetime: DateTimeSource::Fixed {
+                unix_seconds: 1_700_000_000,
+                microsecond: 999_999,
+            },
+            timezone: SandboxTimeZone::Fixed {
+                offset_seconds: -3_600,
+                name: Some("EST".to_owned()),
+            },
+            sleep: SleepMode::System(Duration::from_millis(250)),
+            random_start: RandomStart::Seed(seed),
+        };
+        let back = AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap();
+        assert_eq!(back, calls);
+    }
+    for sleep in [SleepMode::CallHost, SleepMode::Zero] {
+        let calls = AutoOsCalls {
+            datetime: DateTimeSource::CallHost,
+            timezone: SandboxTimeZone::CallHost,
+            sleep,
+            random_start: RandomStart::CallHost,
+        };
+        assert_eq!(AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap(), calls);
+    }
+}
+
+#[test]
+fn empty_auto_os_calls_is_the_default() {
+    let back = AutoOsCalls::try_from(pb::AutoOsCalls::default()).unwrap();
+    assert_eq!(back, AutoOsCalls::default());
+    assert_eq!(back.sleep, SleepMode::System(Duration::from_secs(10)));
+    // An explicit system mode can also omit its maximum.
+    let sandbox = pb::AutoOsCalls {
+        sleep: Some(pb::SleepMode {
+            mode: Some(pb::sleep_mode::Mode::System(pb::SystemSleep::default())),
+        }),
+        ..Default::default()
+    };
+    assert_eq!(AutoOsCalls::try_from(sandbox).unwrap(), AutoOsCalls::default());
+}
+
+#[test]
+fn malformed_auto_os_calls_are_rejected() {
+    let fixed = pb::AutoOsCalls {
+        datetime: Some(pb::auto_os_calls::Datetime::Fixed(pb::FixedDateTime {
+            unix_seconds: 0,
+            microsecond: 1_000_000,
+        })),
+        ..Default::default()
+    };
+    assert_snapshot!(
+        AutoOsCalls::try_from(fixed).unwrap_err().to_string(),
+        @"invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
+    );
+    // a fixed zone is bounded like `datetime.timezone`: strictly within a day of UTC
+    let zone = pb::AutoOsCalls {
+        timezone: Some(pb::SandboxTimeZone {
+            zone: Some(pb::sandbox_time_zone::Zone::Fixed(pb::TimeZone {
+                offset_seconds: 86_400,
+                name: None,
+            })),
+        }),
+        ..Default::default()
+    };
+    assert_snapshot!(AutoOsCalls::try_from(zone).unwrap_err().to_string(), @"invalid value for TimeZone.offset_seconds: 86400 is outside the range -86399..=86399");
+    let seed = pb::AutoOsCalls {
+        random_start: Some(pb::auto_os_calls::RandomStart::Seed(pb::RandomSeed {
+            value: Some(pb::random_seed::Value::Float(f64::NAN)),
+        })),
+        ..Default::default()
+    };
+    assert_snapshot!(
+        AutoOsCalls::try_from(seed).unwrap_err().to_string(),
+        @"invalid value for RandomSeed.float: NaN is not finite"
+    );
+    let empty_seed = pb::AutoOsCalls {
+        random_start: Some(pb::auto_os_calls::RandomStart::Seed(pb::RandomSeed { value: None })),
+        ..Default::default()
+    };
+    assert_snapshot!(
+        AutoOsCalls::try_from(empty_seed).unwrap_err().to_string(),
+        @"missing required field RandomSeed.value"
+    );
 }
 
 #[test]
@@ -782,6 +880,7 @@ fn assert_os_call_round_trip(call: OsFunctionCall) {
 
 #[test]
 fn os_calls_round_trip_all_variants() {
+    let mut kinds_by_name = HashMap::new();
     let p = || MontyPath::new("/mnt/data/f.txt".to_owned());
     for call in [
         OsFunctionCall::Exists(p()),
@@ -843,10 +942,22 @@ fn os_calls_round_trip_all_variants() {
         OsFunctionCall::Sleep(Duration::from_millis(1_500)),
         OsFunctionCall::AsyncSleep(Duration::ZERO),
         OsFunctionCall::AsyncSleep(Duration::from_secs_f64(0.25)),
+        OsFunctionCall::SystemSleep(Duration::from_millis(1_500)),
+        OsFunctionCall::AsyncSystemSleep(Duration::from_secs_f64(0.25)),
         // the longest length either sleep accepts survives the f64 seconds on the wire
         OsFunctionCall::Sleep(sleep_duration(MAX_SLEEP_SECONDS).unwrap()),
         OsFunctionCall::AsyncSleep(sleep_duration_saturating(f64::INFINITY).unwrap()),
     ] {
+        // hosts dispatch on the name, so it must identify the kind
+        let kind = kinds_by_name
+            .entry(call.name())
+            .or_insert_with(|| mem::discriminant(&call));
+        assert_eq!(
+            *kind,
+            mem::discriminant(&call),
+            "two call kinds share the name {}",
+            call.name()
+        );
         assert_os_call_round_trip(call);
     }
 }

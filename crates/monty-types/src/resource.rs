@@ -1,6 +1,10 @@
 //! Resource limits: the [`ResourceTracker`] used by the interpreter heap/VM
 //! and its [`ResourceLimits`] configuration.
 
+#[cfg(target_arch = "wasm32")]
+use std::hint;
+#[cfg(not(target_arch = "wasm32"))]
+use std::thread;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
 use std::{
@@ -163,6 +167,11 @@ pub struct ResourceLimits {
     /// [`DEFAULT_MAX_SUSPENSIONS`]; always bounded, like recursion depth).
     /// The interpreter only stores this limit; hosts must enforce it.
     pub max_suspensions: usize,
+    /// Maximum cumulative sleep under `SleepMode::System`, enforced by the host.
+    /// Sleeps do not count toward execution duration; without this limit, sleeping
+    /// loops need `max_suspensions` or a host deadline. Defaults on deserialization.
+    #[serde(default)]
+    pub max_total_sleep: Option<Duration>,
 }
 
 /// Recommended maximum recursion depth if not otherwise specified.
@@ -184,6 +193,7 @@ impl Default for ResourceLimits {
             gc_interval: None,
             max_recursion_depth: DEFAULT_MAX_RECURSION_DEPTH,
             max_suspensions: DEFAULT_MAX_SUSPENSIONS,
+            max_total_sleep: None,
         }
     }
 }
@@ -231,6 +241,13 @@ impl ResourceLimits {
     #[must_use]
     pub fn max_suspensions(mut self, limit: usize) -> Self {
         self.max_suspensions = limit;
+        self
+    }
+
+    /// Sets the maximum cumulative time hosts wait on system sleeps; each capped delay is charged before the wait.
+    #[must_use]
+    pub fn max_total_sleep(mut self, limit: Duration) -> Self {
+        self.max_total_sleep = Some(limit);
         self
     }
 }
@@ -390,6 +407,12 @@ impl ResourceTracker {
     #[must_use]
     pub fn max_suspensions(&self) -> usize {
         self.limits.max_suspensions
+    }
+
+    /// Cumulative sleep limit for the host to enforce, including after restore.
+    #[must_use]
+    pub fn max_total_sleep(&self) -> Option<Duration> {
+        self.limits.max_total_sleep
     }
 
     /// Returns whether the VM has a memory or time limit configured.
@@ -674,6 +697,18 @@ impl ResourceTracker {
         self.turn_execution_time.set(Duration::ZERO);
     }
 
+    /// Performs a standard-execution sleep without charging `max_feed_duration`.
+    /// Restarts the execution clock only if it was running before the wait.
+    /// All interpreter waits use `block_for` for platform-specific blocking.
+    pub fn sandbox_sleep(&self, duration: Duration) {
+        let was_running = self.running_since.get().is_some();
+        self.on_execution_stop();
+        block_for(duration);
+        if was_running {
+            self.on_execution_start();
+        }
+    }
+
     /// Lowers the live recursion ceiling to `new_limit`, refusing to raise it.
     ///
     /// Exposed under the `test-hooks` feature so `sys.setrecursionlimit` can
@@ -708,4 +743,21 @@ fn probe_memory() -> usize {
     LIVE_MEMORY
         .load(Ordering::Relaxed)
         .saturating_sub(BASELINE_MEMORY.load(Ordering::Relaxed))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn block_for(duration: Duration) {
+    thread::sleep(duration);
+}
+
+/// Blocks for `duration` on wasm by spinning on the monotonic clock:
+/// `std::thread::sleep` needs `wasi:io/poll`, which a browser host serves
+/// only asynchronously. Only standard execution waits here; the wasm worker
+/// suspends its sleeps to the JavaScript host instead.
+#[cfg(target_arch = "wasm32")]
+fn block_for(duration: Duration) {
+    let started = Instant::now();
+    while started.elapsed() < duration {
+        hint::spin_loop();
+    }
 }

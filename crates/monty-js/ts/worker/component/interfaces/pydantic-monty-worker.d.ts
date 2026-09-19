@@ -240,6 +240,82 @@ export interface ResourceLimits {
   gcInterval?: bigint
   maxRecursionDepth?: bigint
   maxSuspensions?: bigint
+  maxTotalSleepMicros?: bigint
+}
+export interface FixedDatetime {
+  unixSeconds: bigint
+  microsecond: number
+}
+export interface FixedTimeZone {
+  offsetSeconds: number
+  name?: string
+}
+export type TimeZone = TimeZoneSystem | TimeZoneCallHost | TimeZoneFixed
+export interface TimeZoneSystem {
+  tag: 'system'
+}
+export interface TimeZoneCallHost {
+  tag: 'call-host'
+}
+export interface TimeZoneFixed {
+  tag: 'fixed'
+  val: FixedTimeZone
+}
+export type DatetimeSource = DatetimeSourceSystem | DatetimeSourceCallHost | DatetimeSourceFixed
+export interface DatetimeSourceSystem {
+  tag: 'system'
+}
+export interface DatetimeSourceCallHost {
+  tag: 'call-host'
+}
+export interface DatetimeSourceFixed {
+  tag: 'fixed'
+  val: FixedDatetime
+}
+export type SleepMode = SleepModeSystem | SleepModeCallHost | SleepModeZero
+export interface SleepModeSystem {
+  tag: 'system'
+  val: bigint | undefined
+}
+export interface SleepModeCallHost {
+  tag: 'call-host'
+}
+export interface SleepModeZero {
+  tag: 'zero'
+}
+export type RandomSeed = RandomSeedInt | RandomSeedFloat | RandomSeedStr | RandomSeedBytes
+export interface RandomSeedInt {
+  tag: 'int'
+  val: Uint8Array
+}
+export interface RandomSeedFloat {
+  tag: 'float'
+  val: number
+}
+export interface RandomSeedStr {
+  tag: 'str'
+  val: string
+}
+export interface RandomSeedBytes {
+  tag: 'bytes'
+  val: Uint8Array
+}
+export type RandomStart = RandomStartSystem | RandomStartCallHost | RandomStartSeed
+export interface RandomStartSystem {
+  tag: 'system'
+}
+export interface RandomStartCallHost {
+  tag: 'call-host'
+}
+export interface RandomStartSeed {
+  tag: 'seed'
+  val: RandomSeed
+}
+export interface AutoOsCalls {
+  datetime?: DatetimeSource
+  timezone?: TimeZone
+  sleep?: SleepMode
+  randomStart?: RandomStart
 }
 /**
  * # Variants
@@ -281,6 +357,7 @@ export interface ConfigureRequest {
   typeCheckFormat: TypeCheckFormat
   typeCheckColor: boolean
   printFlushIntervalMs?: number
+  autoOsCalls?: AutoOsCalls
 }
 export interface FeedRequest {
   code: string
@@ -432,6 +509,7 @@ export interface OsCallEvent {
   kwargs: Array<NodePair>
   callId: number
   allowEagerAwait: boolean
+  systemSleepSecs?: number
 }
 export interface CompleteEvent {
   values: Arena
@@ -501,4 +579,5 @@ export interface DispatchResult {
   status: Status
   events: Array<Event>
   maxSuspensions?: bigint
+  maxTotalSleepMicros?: bigint
 }

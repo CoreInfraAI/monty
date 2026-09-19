@@ -12,7 +12,7 @@ use std::{
 use chrono::{
     Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike, format::StrftimeItems,
 };
-use monty_types::{MontyTimeZone, OsFunctionCall};
+use monty_types::{DateTimeSource, MontyTimeZone, OsFunctionCall, local_wall_clock};
 
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
@@ -277,18 +277,56 @@ struct DatetimeInitArgs {
     fold: i32,
 }
 
-/// Classmethod implementation for `datetime.now(tz=None)`. Yields a
-/// `DateTimeNow` OS call carrying the tz argument as a typed
-/// [`Option<MontyTimeZone>`] — validated here, so the call can never carry an
-/// arbitrary object.
+/// Reads `datetime.now(tz=None)` from the session clock, preserving `tz` identity.
+/// Naive results use the session zone. If the clock or required zone uses
+/// `CallHost`, yields `DateTimeNow` with a validated [`Option<MontyTimeZone>`].
 pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let NowArgs { tz } = NowArgs::from_args(args, vm)?;
     defer_drop!(tz, vm);
-    let tz = tzinfo_from_value(tz, vm.heap, vm.interns)?.0.map(|tz| MontyTimeZone {
-        offset_seconds: tz.offset_seconds,
-        name: tz.name,
-    });
-    Ok(CallResult::OsCall(OsFunctionCall::DateTimeNow(tz)))
+    let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
+    // Invalid fixed instants raise; only CallHost falls back to the host's clock.
+    let local = match (sandbox_instant(vm)?, &tz) {
+        (Some(utc), Some(tz)) => Some(
+            from_utc_naive_with_timezone_parts(utc, tz.offset_seconds, tz.name.clone())
+                .ok_or_else(date_out_of_range)?,
+        ),
+        (Some(utc), None) => match sandbox_local_wall_clock(vm, utc)? {
+            Some(local) => Some(from_local_naive(local).ok_or_else(date_out_of_range)?),
+            None => None,
+        },
+        (None, _) => None,
+    };
+    let Some(mut dt) = local else {
+        let tz = tz.map(|tz| MontyTimeZone {
+            offset_seconds: tz.offset_seconds,
+            name: tz.name,
+        });
+        return Ok(CallResult::OsCall(OsFunctionCall::DateTimeNow(tz)));
+    };
+    attach_or_allocate_tzinfo_ref(&mut dt, tz_ref, vm.heap);
+    Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt)))))
+}
+
+/// Reads the session clock in UTC; `None` means `CallHost` and requires suspension.
+/// Unrepresentable fixed instants raise `OverflowError` for all three clock calls.
+pub(crate) fn sandbox_instant(vm: &VM<'_>) -> RunResult<Option<NaiveDateTime>> {
+    match vm.env.auto_os_calls.datetime {
+        DateTimeSource::CallHost => Ok(None),
+        source => source.read().map(Some).ok_or_else(date_out_of_range),
+    }
+}
+
+/// Converts UTC to the session zone for naive `now()` and `today()`.
+/// Returns `None` for `CallHost`; out-of-range years raise `OverflowError`.
+pub(crate) fn sandbox_local_wall_clock(vm: &VM<'_>, utc: NaiveDateTime) -> RunResult<Option<NaiveDateTime>> {
+    match vm.env.auto_os_calls.timezone.offset_seconds(utc) {
+        None => Ok(None),
+        Some(offset) => local_wall_clock(utc, offset).map(Some).ok_or_else(date_out_of_range),
+    }
+}
+
+fn date_out_of_range() -> RunError {
+    SimpleException::new_msg(ExcType::OverflowError, DATE_OUT_OF_RANGE).into()
 }
 
 /// Argument shape for `datetime.now(tz=None)`.

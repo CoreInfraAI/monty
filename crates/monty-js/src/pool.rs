@@ -41,7 +41,8 @@ use monty_types::{
 };
 use napi::{
     bindgen_prelude::{
-        Array, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw, Unknown,
+        Array, BigInt, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw,
+        Unknown,
     },
     threadsafe_function::UnknownReturnValue,
     Env, Error, Result,
@@ -51,6 +52,7 @@ use opentelemetry::{trace::TraceContextExt, Context};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
+    auto_os_calls::extract_auto_os_calls,
     convert::{js_to_monty, monty_to_js, DecodedArena, GraphEncoder},
     limits::{extract_limits, JsResourceLimits},
     telemetry::{configured_adapter, configured_tracing_adapter},
@@ -142,6 +144,33 @@ pub struct NativeCheckoutOptions {
     /// it (ms). Absent: the worker's default. `0` restores line buffering,
     /// delivering each completed line on its own.
     pub print_flush_interval_ms: Option<f64>,
+
+    /// The instant the clock calls read: `'system'`, `'call_host'` or
+    /// `'fixed'` (with the two `datetime*` parts below). Absent: `'system'`.
+    pub datetime_kind: Option<String>,
+    /// A fixed clock's instant, seconds since the Unix epoch (UTC).
+    pub datetime_unix_seconds: Option<BigInt>,
+    /// A fixed clock's sub-second part, 0..=999999.
+    pub datetime_microsecond: Option<u32>,
+    /// The zone naive clock calls read in: `'system'`, `'call_host'` or
+    /// `'fixed'` (with the two `timezone*` parts below). Absent: `'system'`.
+    pub timezone_kind: Option<String>,
+    /// A fixed zone's offset from UTC, in seconds.
+    pub timezone_offset_seconds: Option<i32>,
+    /// A fixed zone's name, if it has one.
+    pub timezone_name: Option<String>,
+    /// Sleep policy: `'system'` (default), `'zero'` or `'call_host'`.
+    pub sleep: Option<String>,
+    /// Maximum seconds per system sleep (default 10); `Infinity` disables the cap.
+    pub sleep_system_max_secs: Option<f64>,
+    /// Where `random` starts: `'system'`, `'call_host'` or `'seed'` (with
+    /// exactly one `random_seed_*` field below). Absent: `'system'`.
+    pub random_start_kind: Option<String>,
+    /// Integer seed encoded as two's-complement little-endian bytes.
+    pub random_seed_int: Option<Buffer>,
+    pub random_seed_float: Option<f64>,
+    pub random_seed_str: Option<String>,
+    pub random_seed_bytes: Option<Buffer>,
 }
 
 /// Per-feed settings other than the mounts, passed by the TypeScript
@@ -260,6 +289,7 @@ impl NativePool {
     #[napi]
     pub fn checkout(&self, options: NativeCheckoutOptions) -> Result<NativeSession> {
         let limits = options.limits.map(extract_limits).transpose()?;
+        let auto_os_calls = extract_auto_os_calls(&options)?;
         Ok(NativeSession {
             pool: Arc::clone(&self.pool),
             repl_config: ReplConfig {
@@ -282,6 +312,7 @@ impl NativePool {
                     .print_flush_interval_ms
                     .map(|ms| duration_from_ms("printFlushInterval", ms))
                     .transpose()?,
+                auto_os_calls,
             },
             checkout: Arc::new(AsyncMutex::new(None)),
         })
@@ -893,9 +924,13 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             args,
             call_id,
             allow_eager_await,
+            system_sleep,
         }) => {
             obj.set("kind", "osCall")?;
             obj.set("functionName", function_name)?;
+            if let Some(delay) = system_sleep {
+                obj.set("systemSleepSecs", delay.as_secs_f64())?;
+            }
             let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&args);
             let arena = DecodedArena::new(graph, env)?;
             obj.set("args", values_to_js(env, &arena, arg_ids)?)?;

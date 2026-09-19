@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 from types import EllipsisType
 from typing import Any, Callable, Literal, Protocol
 
@@ -51,6 +52,9 @@ from .os_access import (
 __all__ = (
     # this file
     'ResourceLimits',
+    'AutoOSCalls',
+    'RandomSeed',
+    'TimeZone',
     'ExternalResult',
     'ExternalSettledResult',
     'ExternalReturnValue',
@@ -158,6 +162,58 @@ class ResourceLimits(TypedDict, total=False):
 
     The pool aborts an over-budget feed with an uncatchable `RuntimeError`; the
     session remains usable. Restoring a dump resets the count."""
+
+    max_total_sleep_secs: float | None
+    """Maximum cumulative seconds of `'system'` sleep, excluded from execution duration limits.
+    The pool charges each sleep before waiting; exceeding the limit raises an uncatchable `TimeoutError`."""
+
+
+class TimeZone(TypedDict):
+    """A fixed UTC offset and optional name, as in `datetime.timezone`; IANA zones are unsupported."""
+
+    offset_seconds: int
+    """Offset from UTC, in seconds."""
+
+    name: NotRequired[str]
+    """The zone's name, if it has one."""
+
+
+class RandomSeed(TypedDict):
+    """Initial seed for the sandbox's `random` module."""
+
+    seed: int | float | str | bytes
+
+
+class AutoOSCalls(TypedDict, total=False):
+    """Clock, sleep and random initialization policies for the session.
+
+    Omitted keys keep their defaults; `'call_host'` routes calls to the `os=` handler.
+    """
+
+    datetime: Literal['system', 'call_host'] | datetime.datetime
+    """Clock for `date.today()`, `datetime.now()` and `time.time()`; defaults to the worker's clock.
+    A `datetime` freezes the instant and, unless `timezone` is set, uses its `utcoffset()` and `tzname()`
+    (UTC if naive). Naive `datetime.now()` then returns its wall time."""
+
+    timezone: Literal['system', 'call_host'] | TimeZone
+    """Zone for naive `datetime.now()` and `date.today()`; defaults to the worker's local zone.
+    `'call_host'` routes calls requiring the zone to `os=`; a `TimeZone` supplies a fixed offset."""
+
+    sleep: Literal['system', 'call_host', 'zero']
+    """Policy for `time.sleep()` and `asyncio.sleep()`; defaults to `'system'`.
+    `'system'` waits in the pool, capped per call by `sleep_system_max`; gathered async sleeps overlap.
+    `'call_host'` delegates waits to `os=`; `'zero'` returns immediately."""
+
+    sleep_system_max: float
+    """Maximum seconds per `'system'` sleep (default 10; `inf` disables the cap).
+    Raises `ValueError` with other sleep modes. Each sleep counts as one suspension and toward
+    `max_total_sleep_secs`, but not execution duration limits."""
+
+    random_start: Literal['system', 'call_host'] | RandomSeed
+    """Initial `random` state; defaults to the worker's OS entropy.
+    `'call_host'` requests 2496 bytes from `os.urandom` via `os=` on the first draw.
+    `{'seed': s}` initializes the module as `random.seed(s)` and derives deterministic states for unseeded
+    `random.Random()` instances. Sandbox calls to `random.seed()` still override the state."""
 
 
 class ExternalReturnValue(TypedDict):

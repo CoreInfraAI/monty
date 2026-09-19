@@ -400,10 +400,8 @@ await session.feedRun('import os\nos.getenv("HOME")', {
 })
 ```
 
-An `async` callback works too. Its answer to `asyncio.sleep` is registered as a
-future, so the sandbox's other tasks run while it waits (or, when there are
-none, is awaited in place like an eager host function); its answer to any other
-OS call is awaited before that session resumes.
+Under `autoOsCalls: { sleep: 'call_host' }`, an async `os` callback lets other sandbox tasks run during `asyncio.sleep`.
+With no other tasks, the pool awaits it in place, as it does for every other OS call.
 
 Callback-backed virtual files return a `MontyFileHandle` marker from the
 open-time call. Paths are virtual POSIX sandbox paths and `position` defaults
@@ -465,6 +463,35 @@ backstop.
 `maxSuspensions` limits the host round trips the pool services per checkout
 (default 1000; it cannot be disabled). Exceeding it ends the feed with an
 uncatchable `RuntimeError`.
+
+## Clock, sleeping and entropy
+
+By default, `date.today()`, `datetime.now()` and `time.time()` read the worker's clock.
+The pool handles `time.sleep()` and `asyncio.sleep()`, capped per call by `sleepSystemMax` (10 seconds).
+Gathered async sleeps overlap.
+Sleeps count toward suspensions and `maxTotalSleepSecs`, but not execution duration limits.
+Unseeded `random` generators use worker OS entropy.
+Configure these policies per session with `autoOsCalls`:
+
+```ts
+const fixed = await pool.checkout({
+  autoOsCalls: {
+    datetime: new Date('2026-01-01T09:30:00Z'),
+    timezone: { offsetSeconds: 3600, name: 'CET' },
+    sleepSystemMax: 0.5,
+    randomStart: { seed: 42 },
+  },
+})
+```
+
+A `Date` freezes the instant and defaults the local zone to UTC unless `timezone` is supplied.
+`timezone` controls naive `datetime.now()` and `date.today()` using a fixed UTC offset, without IANA zone rules.
+`sleep: 'zero'` returns immediately; `sleepSystemMax: Infinity` disables the per-call cap.
+`{ seed }` initializes the module as `random.seed(seed)` and derives deterministic states for unseeded `random.Random()`
+instances.
+Seeds accept `number`, `bigint`, `string` and `Uint8Array`; sandbox calls to `random.seed()` still override the state.
+`'call_host'` delegates the selected clock, local-zone, sleep or initial-entropy calls to `os`.
+Explicit `os.urandom()` calls always reach `os`.
 
 ## Assert message annotations
 

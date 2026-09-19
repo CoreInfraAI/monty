@@ -25,8 +25,9 @@ use std::{
 use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
-    PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, TypeCheckState, TypeCheckingConfig,
+    AssertMessageAnnotations, AutoOsCalls, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject,
+    OsFunctionCall, PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, TypeCheckState,
+    TypeCheckingConfig,
 };
 
 use super::{
@@ -169,6 +170,8 @@ pub struct SessionBudget {
     /// Maximum suspensions the host may service; enforced outside the child.
     /// `None` only when no session exists.
     pub max_suspensions: Option<usize>,
+    /// Host-enforced sleep budget; `None` when unlimited or no session exists.
+    pub max_total_sleep: Option<Duration>,
 }
 
 /// REPL session state of the child.
@@ -208,6 +211,8 @@ pub struct Child {
     /// `Configure`. `Duration::ZERO` means line buffering (see the field's
     /// documentation in the schema).
     print_flush_interval: Duration,
+    /// OS call policy from `Configure`, applied when creating the REPL.
+    auto_os_calls: AutoOsCalls,
 }
 
 impl Default for Child {
@@ -218,6 +223,7 @@ impl Default for Child {
             type_checker: TypeChecker::default(),
             type_check: None,
             print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
+            auto_os_calls: AutoOsCalls::default(),
         }
     }
 }
@@ -345,6 +351,11 @@ impl Child {
                 type_check: config.type_check,
                 // the wire default applies before the repl exists too
                 max_suspensions: Some(ResourceLimits::from(config.limits.unwrap_or_default()).max_suspensions),
+                max_total_sleep: config
+                    .limits
+                    .as_ref()
+                    .and_then(|limits| limits.max_total_sleep_micros)
+                    .map(Duration::from_micros),
             },
             SessionState::Configured(None) => SessionBudget::default(),
             SessionState::Ready(repl) => self.tracker_budget(repl.tracker()),
@@ -358,6 +369,7 @@ impl Child {
             max_memory: tracker.max_memory(),
             type_check: self.type_check.is_some(),
             max_suspensions: Some(tracker.max_suspensions()),
+            max_total_sleep: tracker.max_total_sleep(),
         }
     }
 
@@ -437,6 +449,12 @@ impl Child {
             self.print_flush_interval = configure
                 .print_flush_interval_ms
                 .map_or(DEFAULT_PRINT_FLUSH_INTERVAL, |ms| Duration::from_millis(u64::from(ms)));
+            // Reject invalid settings on the Configure turn.
+            self.auto_os_calls = match configure.auto_os_calls.clone().map(AutoOsCalls::try_from) {
+                None => AutoOsCalls::default(),
+                Some(Ok(auto_os_calls)) => auto_os_calls,
+                Some(Err(err)) => return protocol_violation(&format!("invalid auto_os_calls: {err}")),
+            };
             self.state = SessionState::Configured(Some(Box::new(configure)));
             ok_event()
         } else {
@@ -476,6 +494,8 @@ impl Child {
             monty_version: _,
             // applied when the `Configure` arrived, so a `Load` honors it too
             print_flush_interval_ms: _,
+            // validated and stored when the `Configure` arrived
+            auto_os_calls: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;
@@ -491,11 +511,9 @@ impl Child {
                 AssertMessageAnnotations::from_max_bytes,
             ),
         };
-        self.state = SessionState::Ready(Box::new(MontyRepl::new(
-            &self.script_name,
-            ResourceTracker::new(limits),
-            options,
-        )));
+        let repl = MontyRepl::new(&self.script_name, ResourceTracker::new(limits), options)
+            .with_auto_os_calls(self.auto_os_calls.clone());
+        self.state = SessionState::Ready(Box::new(repl));
         Ok(())
     }
 
@@ -783,9 +801,8 @@ impl Child {
         event
     }
 
-    /// Drives execution until it needs the parent, returning the turn-ending
-    /// event. Every OS call surfaces to the parent — the child performs no
-    /// filesystem I/O (mounts are serviced parent-side).
+    /// Runs until a turn-ending event. OS calls not answered by `AutoOsCalls`
+    /// go to the parent, including all filesystem I/O.
     fn drive(&mut self, result: Result<ReplProgress, Box<ReplStartError>>) -> pb::ChildEvent {
         match result {
             Ok(ReplProgress::Complete { repl, value }) => {
@@ -878,6 +895,7 @@ impl Child {
         self.type_check = None;
         self.script_name = String::new();
         self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;
+        self.auto_os_calls = AutoOsCalls::default();
         self.type_checker.reset()
     }
 }
@@ -946,6 +964,7 @@ fn stamp_budget(event: &mut pb::ChildEvent, tracker: &ResourceTracker) {
     event.feed_execution_micros = u64::try_from(tracker.feed_elapsed().as_micros()).unwrap_or(u64::MAX);
     event.max_feed_duration_micros = micros_field(tracker.max_feed_duration());
     event.max_turn_duration_micros = micros_field(tracker.max_turn_duration());
+    event.max_total_sleep_micros = micros_field(tracker.max_total_sleep());
     event.max_suspensions = Some(tracker.max_suspensions() as u64);
 }
 

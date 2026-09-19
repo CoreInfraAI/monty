@@ -29,9 +29,9 @@ mod bindings {
 mod value;
 
 use bindings::exports::pydantic::monty::worker::{
-    CallResult, CompleteEvent, ConfigureRequest, DispatchResult, Event, FunctionCallEvent, Guest, NameLookupEvent,
-    NameLookupResult, OsCallEvent, PrintEvent, RaisedError, RaisedException, Request, StackFrame, Status,
-    TypeCheckFormat,
+    AutoOsCalls, CallResult, CompleteEvent, ConfigureRequest, DatetimeSource, DispatchResult, Event, FunctionCallEvent,
+    Guest, NameLookupEvent, NameLookupResult, OsCallEvent, PrintEvent, RaisedError, RaisedException, RandomSeed,
+    RandomStart, Request, SleepMode, StackFrame, Status, TimeZone, TypeCheckFormat,
 };
 
 thread_local! {
@@ -55,6 +55,9 @@ impl Guest for Component {
             let mut result = dispatch(child, request);
             let budget = child.session_budget();
             result.max_suspensions = budget.max_suspensions.map(|limit| limit as u64);
+            result.max_total_sleep_micros = budget
+                .max_total_sleep
+                .map(|limit| u64::try_from(limit.as_micros()).unwrap_or(u64::MAX));
             let hard_memory_limit = memory_limit_with_headroom(budget.max_memory, budget.type_check);
             let allocator_ready = monty_alloc::set_hard_limit(hard_memory_limit);
             (result, allocator_ready)
@@ -64,6 +67,7 @@ impl Guest for Component {
                 status: Status::Shutdown,
                 events: vec![Event::FatalError(error.to_owned())],
                 max_suspensions: result.max_suspensions,
+                max_total_sleep_micros: result.max_total_sleep_micros,
             }
         } else {
             result
@@ -82,6 +86,7 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
                     "malformed component request: {error}"
                 )))],
                 max_suspensions: None,
+                max_total_sleep_micros: None,
             };
         }
     };
@@ -92,6 +97,7 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
                 "request frame of {len} bytes exceeds maximum of {MAX_FRAME_LEN} bytes"
             )))],
             max_suspensions: None,
+            max_total_sleep_micros: None,
         };
     }
 
@@ -116,6 +122,7 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
         },
         events: sink.events,
         max_suspensions: None,
+        max_total_sleep_micros: None,
     }
 }
 
@@ -202,6 +209,8 @@ struct PreparedOsEvent {
     args: CallArgs,
     call_id: u32,
     allow_eager_await: bool,
+    /// System sleep duration for the host to await directly.
+    system_sleep_secs: Option<f64>,
 }
 
 impl PreparedOsEvent {
@@ -214,6 +223,12 @@ impl PreparedOsEvent {
             function_name: call.name().to_owned(),
             // The eager bit is only meaningful on a call a future may answer.
             allow_eager_await: eager_bit && OsFunctionCall::accepts_future(call.name()),
+            system_sleep_secs: match call {
+                OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) => {
+                    Some(delay.as_secs_f64())
+                }
+                _ => None,
+            },
             args: call.to_args(),
             call_id,
         })
@@ -230,6 +245,7 @@ impl PreparedOsEvent {
         Event::OsCall(OsCallEvent {
             function_name: self.function_name,
             allow_eager_await: self.allow_eager_await,
+            system_sleep_secs: self.system_sleep_secs,
             values: value::into_component(graph.into_nodes()),
             args: value::raw_ids(args),
             kwargs: value::raw_pairs(kwargs),
@@ -312,6 +328,7 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
             gc_interval: limits.gc_interval,
             max_recursion_depth: limits.max_recursion_depth,
             max_suspensions: limits.max_suspensions,
+            max_total_sleep_micros: limits.max_total_sleep_micros,
         }),
         type_check: request.type_check,
         type_check_stubs: request.type_check_stubs,
@@ -324,6 +341,54 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         // boundaries survive it: the host gets one print callback per frame,
         // and a print collector charges its cap per frame.
         print_flush_interval_ms: request.print_flush_interval_ms,
+        auto_os_calls: request.auto_os_calls.map(auto_os_calls_from_component),
+    }
+}
+
+/// Protocol conversion validates these component settings as untrusted parent input.
+fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
+    let datetime = calls.datetime.map(|source| match source {
+        DatetimeSource::System => pb::auto_os_calls::Datetime::System(pb::Unit {}),
+        DatetimeSource::CallHost => pb::auto_os_calls::Datetime::CallHost(pb::Unit {}),
+        DatetimeSource::Fixed(fixed) => pb::auto_os_calls::Datetime::Fixed(pb::FixedDateTime {
+            unix_seconds: fixed.unix_seconds,
+            microsecond: fixed.microsecond,
+        }),
+    });
+    let timezone = calls.timezone.map(|zone| pb::SandboxTimeZone {
+        zone: Some(match zone {
+            TimeZone::System => pb::sandbox_time_zone::Zone::System(pb::Unit {}),
+            TimeZone::CallHost => pb::sandbox_time_zone::Zone::CallHost(pb::Unit {}),
+            TimeZone::Fixed(fixed) => pb::sandbox_time_zone::Zone::Fixed(pb::TimeZone {
+                offset_seconds: fixed.offset_seconds,
+                name: fixed.name,
+            }),
+        }),
+    });
+    let sleep = calls.sleep.map(|mode| pb::SleepMode {
+        mode: Some(match mode {
+            SleepMode::System(max_micros) => pb::sleep_mode::Mode::System(pb::SystemSleep { max_micros }),
+            SleepMode::CallHost => pb::sleep_mode::Mode::CallHost(pb::Unit {}),
+            SleepMode::Zero => pb::sleep_mode::Mode::Zero(pb::Unit {}),
+        }),
+    });
+    let random_start = calls.random_start.map(|start| match start {
+        RandomStart::System => pb::auto_os_calls::RandomStart::RandomSystem(pb::Unit {}),
+        RandomStart::CallHost => pb::auto_os_calls::RandomStart::RandomCallHost(pb::Unit {}),
+        RandomStart::Seed(seed) => pb::auto_os_calls::RandomStart::Seed(pb::RandomSeed {
+            value: Some(match seed {
+                RandomSeed::Int(bytes) => pb::random_seed::Value::Int(bytes.into()),
+                RandomSeed::Float(f) => pb::random_seed::Value::Float(f),
+                RandomSeed::Str(s) => pb::random_seed::Value::Str(s),
+                RandomSeed::Bytes(b) => pb::random_seed::Value::Bytes(b.into()),
+            }),
+        }),
+    });
+    pb::AutoOsCalls {
+        datetime,
+        timezone,
+        sleep,
+        random_start,
     }
 }
 

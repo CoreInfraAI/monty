@@ -126,7 +126,15 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
 - `FunctionCall::object_id` and `NameLookup::object_id` identify the host receiver for routed calls and lookups,
   including class construction via `__call__`.
   Plain calls and lookups carry `None`.
-- `MontyRun::with_host_clock` / `MontyRepl::with_host_clock` — choose what `date.today()`, `datetime.now()` and `time.time()` read on the non-suspending paths, which have no host to ask. `HostClock::System` (this machine's clock) unless changed; `Denied` takes it away, `Fixed` freezes an instant for reproducible runs.
+- `MontyRun::with_auto_os_calls` / `MontyRepl::with_auto_os_calls` configure clocks, sleeps and initial random state on every
+  execution path.
+  `DateTimeSource` selects the system clock, a fixed instant or the host; `SandboxTimeZone` independently selects the local
+  zone, a fixed offset and name or the host.
+  `SleepMode` selects capped system sleeps, a host handler or no wait; `RandomStart` selects OS entropy, a seed with
+  `random.seed()` semantics or host entropy.
+  Defaults use the system clock, local zone and OS entropy, with sleeps capped at ten seconds.
+  System sleeps suspend for the host to wait without its `os` handler; standard execution waits inline.
+  `CallHost` delegates to the host through `RunProgress::OsCall`.
 
 ## Monty crates
 

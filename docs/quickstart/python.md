@@ -171,8 +171,35 @@ with Monty() as pool:
             #> True
 ```
 
+Sessions default to the worker's clock and entropy, with sleeps capped at ten seconds per call.
+For reproducible runs, `checkout(auto_os_calls=...)` can fix the clock, timezone and random seed, and skip sleeps:
+
+```python
+from datetime import datetime
+
+from pydantic_monty import Monty
+
+code = """
+import random, time
+from datetime import datetime
+time.sleep(3600)
+f'{datetime.now():%Y-%m-%d %H:%M} {random.random():.4f}'
+"""
+
+with Monty() as pool:
+    with pool.checkout(
+        auto_os_calls={
+            'datetime': datetime(2026, 1, 1, 9, 30),
+            'sleep': 'zero',
+            'random_start': {'seed': 42},
+        }
+    ) as session:
+        print(session.feed_run(code))
+        #> 2026-01-01 09:30 0.6394
+```
+
 See [resource limits](../resource-limits.md), [type checking](../type-checking.md) and the [security
-model](../security.md).
+model](../security.md#the-clock).
 
 ## Async
 

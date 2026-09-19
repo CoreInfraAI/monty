@@ -8,7 +8,7 @@ use std::{
     iter::repeat_n,
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use monty_proto::{
@@ -16,7 +16,8 @@ use monty_proto::{
     WireFunctionCall, exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
 };
 use monty_types::{
-    CallArgs, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult, NamedValues,
+    AutoOsCalls, CallArgs, DateTimeSource, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult,
+    NamedValues, RandomSeed, RandomStart, SandboxTimeZone, SleepMode,
     unstable::{self, MontyNode},
 };
 
@@ -24,6 +25,28 @@ use monty_types::{
 /// the regression it guards is "the child never dies", so the only cost of a
 /// long wait is how late that failure is reported on a slow CI machine.
 const DEATH_TIMEOUT: Duration = Duration::from_secs(20);
+
+fn configure() -> pb::Configure {
+    pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: None,
+        type_check: false,
+        type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        assert_message_annotations: None,
+        ..Default::default()
+    }
+}
+
+/// The clock and the sleeps routed to the parent.
+fn call_host() -> AutoOsCalls {
+    AutoOsCalls {
+        datetime: DateTimeSource::CallHost,
+        sleep: SleepMode::CallHost,
+        ..AutoOsCalls::default()
+    }
+}
 
 /// A spawned `monty subprocess` child with framed pipes.
 struct ChildProc {
@@ -91,15 +114,13 @@ impl ChildProc {
     }
 
     fn create_repl(&mut self) {
+        self.create_repl_with(configure());
+    }
+
+    fn create_repl_with_auto_os_calls(&mut self, auto_os_calls: &AutoOsCalls) {
         self.create_repl_with(pb::Configure {
-            script_name: "main.py".to_owned(),
-            limits: None,
-            type_check: false,
-            type_check_stubs: None,
-            monty_version: env!("CARGO_PKG_VERSION").to_owned(),
-            protocol_version: PROTOCOL_VERSION,
-            assert_message_annotations: None,
-            ..Default::default()
+            auto_os_calls: Some(auto_os_calls.into()),
+            ..configure()
         });
     }
 
@@ -519,14 +540,123 @@ fn external_function_not_found_raises_name_error() {
     child.shutdown();
 }
 
-/// The worker's `MontyRepl` carries a `HostClock`, but drives `feed_start`,
-/// which never reads it. Only this test holds the two apart: routing a worker
-/// feed through `feed_run` would answer the clock inside the sandbox instead
-/// of asking the parent.
+/// Default sleeps reach the parent capped at ten seconds; clock and entropy calls stay in the worker.
 #[test]
-fn clock_calls_bubble_to_parent() {
+fn clock_and_entropy_are_answered_in_the_worker_by_default() {
     let mut child = ChildProc::spawn();
     child.create_repl();
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock before the epoch")
+        .as_secs_f64();
+    let (_, event) = child.feed(&format!(
+        "import time
+from datetime import date, datetime
+abs(time.time() - {now}) < 60 and date.today().year == datetime.now().year"
+    ));
+    assert_eq!(expect_complete(event), MontyObject::bool(true));
+    let (_, event) = child.feed("import time\ntime.sleep(3600)");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::SystemSleep(pb::os_call::Sleep { seconds: 10.0 }))
+    );
+    let (_, event) = child.resume_return(call.call_id, MontyObject::none());
+    assert_eq!(expect_complete(event), MontyObject::none());
+    let (_, event) = child.feed(
+        "import asyncio
+asyncio.run(asyncio.sleep(3600, 'woken'))",
+    );
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::AsyncSystemSleep(pb::os_call::AsyncSleep {
+            delay: 10.0
+        }))
+    );
+    let (_, event) = child.resume_return(call.call_id, MontyObject::none());
+    assert_eq!(expect_complete(event), MontyObject::string("woken"));
+    let (_, event) = child.feed(
+        "import random
+0 <= random.random() < 1",
+    );
+    assert_eq!(expect_complete(event), MontyObject::bool(true));
+    child.shutdown();
+}
+
+#[test]
+fn fixed_clock_and_seed_are_answered_in_the_worker() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with_auto_os_calls(&AutoOsCalls {
+        datetime: DateTimeSource::Fixed {
+            unix_seconds: 1_700_000_000,
+            microsecond: 123_456,
+        },
+        timezone: SandboxTimeZone::Fixed {
+            offset_seconds: 7_200,
+            name: None,
+        },
+        random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
+        ..AutoOsCalls::default()
+    });
+
+    let (_, event) = child.feed(
+        "from datetime import datetime
+repr(datetime.now())",
+    );
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::string("datetime.datetime(2023, 11, 15, 0, 13, 20, 123456)")
+    );
+    let (_, event) = child.feed(
+        "import time
+time.time()",
+    );
+    assert_eq!(expect_complete(event), MontyObject::float(1_700_000_000.123_456));
+    // CPython: random.seed(42); random.random()
+    let (_, event) = child.feed(
+        "import random
+random.random()",
+    );
+    assert_eq!(expect_complete(event), MontyObject::float(0.639_426_798_457_883_7));
+    child.shutdown();
+}
+
+/// Rejecting malformed `AutoOsCalls` leaves the worker usable.
+#[test]
+fn invalid_auto_os_calls_is_rejected_on_configure() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(pb::Configure {
+        auto_os_calls: Some(pb::AutoOsCalls {
+            datetime: Some(pb::auto_os_calls::Datetime::Fixed(pb::FixedDateTime {
+                unix_seconds: 0,
+                microsecond: 1_000_000,
+            })),
+            ..Default::default()
+        }),
+        ..configure()
+    }));
+    let error = expect_error(child.recv());
+    assert_eq!(
+        error.message.as_deref(),
+        Some(
+            "protocol violation: invalid auto_os_calls: invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
+        )
+    );
+    child.create_repl();
+    child.feed_complete("1 + 1");
+    child.shutdown();
+}
+
+#[test]
+fn clock_calls_bubble_to_parent_under_call_host() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with_auto_os_calls(&call_host());
 
     let today = MontyDate {
         year: 2024,
@@ -574,13 +704,11 @@ fn clock_calls_bubble_to_parent() {
     child.shutdown();
 }
 
-/// Neither sleep waits in the worker: both cross the wire so the parent can
-/// decide how long a wait it will perform, and `time.sleep()` evaluates to
-/// `None` whatever the parent answers with.
+/// `CallHost` lets the parent choose the wait; `time.sleep()` returns `None` regardless of its answer.
 #[test]
-fn sleep_calls_bubble_to_parent() {
+fn sleep_calls_bubble_to_parent_under_call_host() {
     let mut child = ChildProc::spawn();
-    child.create_repl();
+    child.create_repl_with_auto_os_calls(&call_host());
 
     let (_, event) = child.feed("import time\ntime.sleep(1.5)");
     let pb::child_event::Kind::OsCall(call) = event else {

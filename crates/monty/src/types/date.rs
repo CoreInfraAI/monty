@@ -22,7 +22,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     types::{
-        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type,
+        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, datetime,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,
     },
@@ -135,13 +135,18 @@ struct DateInitArgs {
     day: i32,
 }
 
-/// Classmethod implementation for `date.today()`.
-///
-/// Issues a `DateToday` OS call with no arguments. The host should return
-/// a value constructed with `MontyObject::date`.
-pub(crate) fn class_today(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
-    args.check_zero_args("date.today", heap)?;
-    Ok(CallResult::OsCall(OsFunctionCall::DateToday))
+/// Reads `date.today()` from the session's clock and zone. If either uses
+/// `CallHost`, requests a `DateToday` answer constructed with `MontyObject::date`.
+pub(crate) fn class_today(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    args.check_zero_args("date.today", vm.heap)?;
+    let local = match datetime::sandbox_instant(vm)? {
+        Some(utc) => datetime::sandbox_local_wall_clock(vm, utc)?,
+        None => None,
+    };
+    Ok(match local {
+        None => CallResult::OsCall(OsFunctionCall::DateToday),
+        Some(local) => CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(Date(local.date()))))),
+    })
 }
 
 /// Classmethod `date.fromisoformat(date_string)`.

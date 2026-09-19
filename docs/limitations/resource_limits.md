@@ -1,6 +1,6 @@
 # Resource limits
 
-Monty limits memory, time, and recursion, while the host limits suspension
+Monty limits memory, time, sleep and recursion, while the host limits suspension
 events. Exceeding the memory, time, or suspension limit returns `MemoryError`,
 `TimeoutError`, or `RuntimeError`, respectively; sandboxed code cannot catch
 these exceptions. `RecursionError` is catchable, as in CPython.
@@ -195,6 +195,20 @@ indistinguishable from a stack overflow.
     restoring checkout caps the dump's (the smaller of the two applies, and
     the configured one alone if the worker's reply omits it).
 - There is no in-sandbox way to observe the budget or remaining count.
+
+## Sleep
+
+- `max_total_sleep` bounds cumulative system sleep durations (see [time.md](time.md)).
+    It is disabled by default; sleeping loops remain bounded by `max_suspensions`.
+    Bindings expose `max_total_sleep_secs` or `maxTotalSleepSecs`; the CLI uses `--max-total-sleep`.
+- Pools and the CLI charge each capped delay before waiting.
+    Exceeding the total raises an uncatchable `TimeoutError: sleep limit exceeded: <total> > <limit>`.
+    The reported total includes the refused sleep and uses Rust `Duration` formatting, such as `1.5s > 1s`.
+    An `asyncio.sleep()` costs its full capped delay when created, regardless of how long the host waits.
+    Non-suspending `MontyRun::run` enforces no total sleep limit.
+- The time already slept travels in dumps with the limit, like execution time,
+    so a restored session resumes its budget rather than restarting from zero.
+- Sleeps handed to the host under `'call_host'` are not charged to it.
 
 ## Time
 

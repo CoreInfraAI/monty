@@ -8,11 +8,14 @@ return values from the host are properly converted and used by Monty code.
 from __future__ import annotations
 
 import datetime
+import random
+import time
 from pathlib import PurePosixPath
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
-from conftest import RunMonty
+from conftest import CALL_HOST, RunMonty
 from inline_snapshot import snapshot
 
 from pydantic_monty import NOT_HANDLED, Monty, MontyFileHandle, MontyRuntimeError, StatResult
@@ -396,7 +399,7 @@ def test_os_getenv_callback_with_default(monty_run: RunMonty):
 
 
 # =============================================================================
-# Clock functions (date.today / datetime.now)
+# Clock functions (date.today / datetime.now), under `datetime='call_host'`
 # =============================================================================
 
 
@@ -409,7 +412,7 @@ def test_date_today_callback(monty_run: RunMonty):
             return datetime.date(2024, 1, 15)
         return None
 
-    result = monty_run('from datetime import date; date.today()', os=os_handler)
+    result = monty_run('from datetime import date; date.today()', os=os_handler, checkout=CALL_HOST)
     assert (type(result).__name__, repr(result)) == snapshot(('date', 'datetime.date(2024, 1, 15)'))
 
 
@@ -423,7 +426,7 @@ def test_datetime_now_callback_naive(monty_run: RunMonty):
             return datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)
         return None
 
-    result = monty_run('from datetime import datetime; datetime.now()', os=os_handler)
+    result = monty_run('from datetime import datetime; datetime.now()', os=os_handler, checkout=CALL_HOST)
     assert (type(result).__name__, repr(result)) == snapshot(
         ('datetime', 'datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)')
     )
@@ -439,7 +442,8 @@ def test_datetime_now_callback_with_timezone(monty_run: RunMonty):
             return datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=tzinfo)
         return None
 
-    result = monty_run('from datetime import datetime, timezone; datetime.now(timezone.utc)', os=os_handler)
+    code = 'from datetime import datetime, timezone; datetime.now(timezone.utc)'
+    result = monty_run(code, os=os_handler, checkout=CALL_HOST)
     assert (type(result).__name__, repr(result)) == snapshot(
         (
             'datetime',
@@ -457,11 +461,11 @@ def test_time_time_callback(monty_run: RunMonty):
             return 1700000000.5
         return None
 
-    assert monty_run('import time; time.time()', os=os_handler) == snapshot(1700000000.5)
+    assert monty_run('import time; time.time()', os=os_handler, checkout=CALL_HOST) == snapshot(1700000000.5)
 
 
 # =============================================================================
-# Sleeping (time.sleep / asyncio.sleep)
+# Sleeping (time.sleep / asyncio.sleep), under `sleep='call_host'`
 # =============================================================================
 
 
@@ -474,7 +478,7 @@ def test_time_sleep_callback(monty_run: RunMonty):
         # the host decides how long to wait; waiting not at all is a valid choice
         return None
 
-    assert monty_run('import time; time.sleep(1.5) is None', os=os_handler) == snapshot(True)
+    assert monty_run('import time; time.sleep(1.5) is None', os=os_handler, checkout=CALL_HOST) == snapshot(True)
     assert calls == snapshot([('time.sleep', (1.5,))])
 
 
@@ -485,7 +489,7 @@ def test_time_sleep_can_be_refused(monty_run: RunMonty):
         return NOT_HANDLED
 
     with pytest.raises(MontyRuntimeError) as exc_info:
-        monty_run('import time; time.sleep(30)', os=os_handler)
+        monty_run('import time; time.sleep(30)', os=os_handler, checkout=CALL_HOST)
     assert str(exc_info.value) == snapshot("RuntimeError: 'time.sleep' is not supported in this environment")
 
 
@@ -499,7 +503,7 @@ def test_asyncio_sleep_callback(monty_run: RunMonty):
         return 'ignored'
 
     code = "import asyncio; asyncio.run(asyncio.sleep(0.25, 'woken'))"
-    assert monty_run(code, os=os_handler) == snapshot('woken')
+    assert monty_run(code, os=os_handler, checkout=CALL_HOST) == snapshot('woken')
     assert calls == snapshot([('asyncio.sleep', (0.25,))])
 
 
@@ -510,7 +514,7 @@ def test_asyncio_sleep_result_stays_in_the_sandbox(monty_run: RunMonty):
         return None
 
     code = 'import asyncio\ndef f():\n    return 42\nasyncio.run(asyncio.sleep(0, f))()'
-    assert monty_run(code, os=os_handler) == snapshot(42)
+    assert monty_run(code, os=os_handler, checkout=CALL_HOST) == snapshot(42)
 
 
 def test_async_os_callback_requires_async_monty(pool: Monty):
@@ -519,7 +523,7 @@ def test_async_os_callback_requires_async_monty(pool: Monty):
     async def os_handler(**_: Any) -> Any:
         return None
 
-    with pool.checkout() as session:
+    with pool.checkout(auto_os_calls={'sleep': 'call_host'}) as session:
         with pytest.raises(RuntimeError) as exc_info:
             session.feed_run('import time; time.sleep(0)', os=os_handler)
         assert str(exc_info.value) == snapshot('async os callbacks require AsyncMonty')
@@ -531,8 +535,6 @@ def test_async_os_callback_requires_async_monty(pool: Monty):
 # =============================================================================
 # Entropy (os.urandom / random)
 # =============================================================================
-
-SEED_BYTES = bytes(i % 256 for i in range(2496))
 
 
 def test_os_urandom_callback(monty_run: RunMonty):
@@ -548,18 +550,20 @@ def test_os_urandom_callback(monty_run: RunMonty):
     assert calls == snapshot([('os.urandom', (4,))])
 
 
-def test_random_unseeded_draws_ask_for_entropy_once(monty_run: RunMonty):
-    """An unseeded generator asks for one 2496-byte state vector, then draws are local."""
-    calls: list[Any] = []
+SEED_BYTES = bytes(i % 256 for i in range(2496))
+CALL_HOST_RANDOM: dict[str, Any] = {'auto_os_calls': {'random_start': 'call_host'}}
 
-    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bytes:
-        calls.append((name, args))
-        return SEED_BYTES
 
-    code = 'import random\n[random.random(), random.randint(1, 100), random.Random(1).random()]'
-    result = monty_run(code, os=os_handler)
-    assert result == snapshot([0.2469864874493971, 77, 0.13436424411240122])
-    assert calls == snapshot([('os.urandom', (2496,))])
+def test_random_unseeded_draws_never_call_the_host(monty_run: RunMonty):
+
+    def os_handler(*, name: str, **_: Any) -> bytes:
+        raise AssertionError(f'unexpected OS call {name}')
+
+    code = 'import random\n[random.random(), random.Random().random()]'
+    first = monty_run(code, os=os_handler)
+    second = monty_run(code, os=os_handler)
+    assert all(0.0 <= x < 1.0 for x in first + second)
+    assert first != second
 
 
 def test_random_seeded_never_calls_host(monty_run: RunMonty):
@@ -567,27 +571,6 @@ def test_random_seeded_never_calls_host(monty_run: RunMonty):
         raise AssertionError(f'unexpected OS call {name}')
 
     assert monty_run('import random\nrandom.seed(42)\nrandom.random()', os=os_handler) == snapshot(0.6394267984578837)
-
-
-@pytest.mark.parametrize('with_callback', [True, False])
-def test_random_without_entropy_raises(monty_run: RunMonty, with_callback: bool):
-    """A missing or declining handler leaves an unseeded draw with no entropy."""
-
-    def os_handler(**_: Any) -> object:
-        return NOT_HANDLED
-
-    with pytest.raises(MontyRuntimeError) as exc_info:
-        monty_run('import random\nrandom.random()', os=os_handler if with_callback else None)
-    assert str(exc_info.value) == snapshot("RuntimeError: 'os.urandom' is not supported in this environment")
-
-
-def test_random_rejects_short_entropy(monty_run: RunMonty):
-    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bytes:
-        return b'abc'
-
-    with pytest.raises(MontyRuntimeError) as exc_info:
-        monty_run('import random\nrandom.random()', os=os_handler)
-    assert str(exc_info.value) == snapshot("RuntimeError: 'os.urandom' returned 3 bytes, expected 2496")
 
 
 def test_random_seed_persists_across_feeds(pool: Monty):
@@ -835,3 +818,353 @@ Path('/tmp/mydir/file.txt').read_text()
             ('Path.read_text', (PurePosixPath('/tmp/mydir/file.txt'),)),
         ]
     )
+
+
+# Auto OS calls
+
+
+def test_datetime_default_reads_worker_clock(monty_run: RunMonty):
+    before = datetime.datetime.now()
+    result = monty_run('from datetime import datetime\ndatetime.now()')
+    after = datetime.datetime.now()
+    assert before - datetime.timedelta(seconds=60) <= result <= after + datetime.timedelta(seconds=60)
+
+
+def test_datetime_fixed_naive_is_utc(monty_run: RunMonty):
+    frozen = datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)
+    code = (
+        'import time\nfrom datetime import date, datetime, timezone\n'
+        '(datetime.now(), date.today(), time.time(), datetime.now(timezone.utc), datetime.now() == datetime.now())'
+    )
+    result = monty_run(code, checkout={'auto_os_calls': {'datetime': frozen}})
+    assert result == snapshot(
+        (
+            datetime.datetime(2024, 1, 15, 10, 30, 5, 123456),
+            datetime.date(2024, 1, 15),
+            1705314605.123456,
+            datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc),
+            True,
+        )
+    )
+
+
+def test_datetime_fixed_aware_uses_its_offset(monty_run: RunMonty):
+    frozen = datetime.datetime(2024, 1, 15, 10, 30, 5, tzinfo=datetime.timezone(datetime.timedelta(hours=2)))
+    code = 'import time\nfrom datetime import datetime, timezone\n(datetime.now(), datetime.now(timezone.utc), time.time())'
+    result = monty_run(code, checkout={'auto_os_calls': {'datetime': frozen}})
+    assert result == snapshot(
+        (
+            datetime.datetime(2024, 1, 15, 10, 30, 5),
+            datetime.datetime(2024, 1, 15, 8, 30, 5, tzinfo=datetime.timezone.utc),
+            1705307405.0,
+        )
+    )
+
+
+def test_datetime_fixed_zoneinfo(monty_run: RunMonty):
+    """Resolve date-dependent UTC offsets at the frozen instant."""
+    frozen = datetime.datetime(2024, 7, 1, 12, 0, tzinfo=ZoneInfo('Europe/Paris'))
+    code = 'from datetime import datetime, timezone\n(datetime.now(), datetime.now(timezone.utc))'
+    result = monty_run(code, checkout={'auto_os_calls': {'datetime': frozen}})
+    assert result == snapshot(
+        (
+            datetime.datetime(2024, 7, 1, 12, 0),
+            datetime.datetime(2024, 7, 1, 10, 0, tzinfo=datetime.timezone.utc),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        ('later', ValueError, "datetime must be 'system', 'call_host' or a datetime.datetime, got 'later'"),
+        (123, TypeError, "datetime must be 'system', 'call_host' or a datetime.datetime, not int"),
+        (
+            datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone(datetime.timedelta(microseconds=500))),
+            ValueError,
+            'datetime utcoffset must be a whole number of seconds',
+        ),
+    ],
+)
+def test_datetime_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(auto_os_calls={'datetime': value})
+    assert str(exc_info.value) == message
+
+
+def test_sleep_zero_returns_at_once(monty_run: RunMonty):
+    start = time.monotonic()
+    code = "import asyncio, time\ntime.sleep(3600)\nasyncio.run(asyncio.sleep(3600, 'woken'))"
+    assert monty_run(code, checkout={'auto_os_calls': {'sleep': 'zero'}}) == snapshot('woken')
+    assert time.monotonic() - start < 5
+
+
+def test_sleep_system_max(monty_run: RunMonty):
+    start = time.monotonic()
+    code = "import asyncio, time\nt = time.time()\ntime.sleep(3600)\nasyncio.run(asyncio.sleep(3600, 'woken'))\ntime.time() >= t"
+    assert monty_run(code, checkout={'auto_os_calls': {'sleep_system_max': 0.001}}) == snapshot(True)
+    assert time.monotonic() - start < 5
+    assert (
+        monty_run('import time\ntime.sleep(0.001)', checkout={'auto_os_calls': {'sleep_system_max': float('inf')}})
+        is None
+    )
+
+
+def test_sandbox_sleeps_overlap(monty_run: RunMonty):
+    # Verify overlap by ordering, without requiring a precise wall-clock duration.
+    code = (
+        'import asyncio, time\n'
+        'starts, ends = [], []\n'
+        'async def w(n):\n'
+        '    starts.append(time.time())\n'
+        '    await asyncio.sleep(0.05, n)\n'
+        '    ends.append(time.time())\n'
+        '    return n * 2\n'
+        'async def main():\n'
+        '    return await asyncio.gather(w(1), w(2), w(3))\n'
+        'r = asyncio.run(main())\n'
+        '(r, max(starts) < min(ends))'
+    )
+    assert monty_run(code) == snapshot(([2, 4, 6], True))
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        (-1, ValueError, 'invalid sleep_system_max: cannot convert float seconds to Duration: value is negative'),
+        (
+            float('nan'),
+            ValueError,
+            'invalid sleep_system_max: cannot convert float seconds to Duration: value is either too big or NaN',
+        ),
+        ('1', TypeError, 'sleep_system_max must be a number of seconds, not str'),
+        (True, TypeError, 'sleep_system_max must be a number of seconds, not bool'),
+    ],
+)
+def test_sleep_system_max_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(auto_os_calls={'sleep_system_max': value})
+    assert str(exc_info.value) == message
+
+
+@pytest.mark.parametrize('sleep', ['call_host', 'zero'])
+def test_sleep_system_max_contradicts_other_modes(pool: Monty, sleep: Any):
+    with pytest.raises(ValueError) as exc_info:
+        pool.checkout(auto_os_calls={'sleep': sleep, 'sleep_system_max': 1})
+    assert str(exc_info.value) == f"sleep_system_max only applies to sleep='system', not '{sleep}'"
+
+
+def test_sleep_system_never_reaches_os(monty_run: RunMonty):
+    calls: list[Any] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append((name, args))
+        return None
+
+    code = "import asyncio, time\ntime.sleep(0.001)\nasyncio.run(asyncio.sleep(0.001, 'woken'))"
+    assert monty_run(code, os=os_handler) == snapshot('woken')
+    assert calls == snapshot([])
+
+
+def test_sleep_call_host_reaches_os(monty_run: RunMonty):
+    calls: list[Any] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append((name, args))
+        return None
+
+    assert (
+        monty_run('import time\ntime.sleep(1.5)', os=os_handler, checkout={'auto_os_calls': {'sleep': 'call_host'}})
+        is None
+    )
+    assert calls == snapshot([('time.sleep', (1.5,))])
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        ('forever', ValueError, "sleep must be 'system', 'call_host' or 'zero', got 'forever'"),
+        (0, TypeError, 'sleep must be a str'),
+    ],
+)
+def test_sleep_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(auto_os_calls={'sleep': value})
+    assert str(exc_info.value) == message
+
+
+@pytest.mark.parametrize('seed', [42, -42, 2**70, 1.5, 'abc', b'abc'])
+def test_random_start_seed_matches_random_seed(monty_run: RunMonty, seed: Any):
+    expected = random.Random(seed)
+    code = 'import random\n[random.random(), random.randint(1, 100)]'
+    assert monty_run(code, checkout={'auto_os_calls': {'random_start': {'seed': seed}}}) == [
+        expected.random(),
+        expected.randint(1, 100),
+    ]
+
+
+def test_random_start_seed_persists_and_is_overridable(pool: Monty):
+    with pool.checkout(auto_os_calls={'random_start': {'seed': 42}}) as session:
+        session.feed_run('import random')
+        assert session.feed_run('random.random()') == snapshot(0.6394267984578837)
+        session.feed_run('random.seed(5)')
+        assert session.feed_run('random.random()') == snapshot(0.6229016948897019)
+
+
+def test_random_start_seed_instances_are_deterministic(monty_run: RunMonty):
+    code = 'import random\n[random.Random().random(), random.Random().random(), random.random()]'
+    first = monty_run(code, checkout={'auto_os_calls': {'random_start': {'seed': 42}}})
+    second = monty_run(code, checkout={'auto_os_calls': {'random_start': {'seed': 42}}})
+    assert first == second
+    assert len(set(first)) == 3
+    assert first[2] == snapshot(0.6394267984578837)
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        (
+            'seeded',
+            ValueError,
+            "random_start must be 'system', 'call_host' or {'seed': int | float | str | bytes}, got 'seeded'",
+        ),
+        (
+            {'sead': 1},
+            ValueError,
+            "random_start must be 'system', 'call_host' or {'seed': int | float | str | bytes}, got {'sead': 1}",
+        ),
+        ({'seed': True}, TypeError, 'random_start seed must be an int, float, str or bytes, not bool'),
+        ({'seed': float('nan')}, ValueError, 'random_start seed must be finite, not NaN'),
+        ({'seed': float('-inf')}, ValueError, 'random_start seed must be finite, not -inf'),
+        ({'seed': None}, TypeError, 'random_start seed must be an int, float, str or bytes, not NoneType'),
+        (1, TypeError, "random_start must be 'system', 'call_host' or {'seed': int | float | str | bytes}, not int"),
+    ],
+)
+def test_random_start_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(auto_os_calls={'random_start': value})
+    assert str(exc_info.value) == message
+
+
+def test_random_start_call_host_asks_the_host_for_entropy_once(monty_run: RunMonty):
+    calls: list[Any] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bytes:
+        calls.append((name, args))
+        return SEED_BYTES
+
+    code = 'import random\n[random.random(), random.randint(1, 100), random.Random(1).random()]'
+    result = monty_run(code, os=os_handler, checkout=CALL_HOST_RANDOM)
+    assert result == snapshot([0.2469864874493971, 77, 0.13436424411240122])
+    assert calls == snapshot([('os.urandom', (2496,))])
+
+
+@pytest.mark.parametrize('with_callback', [True, False])
+def test_random_start_call_host_without_entropy_raises(monty_run: RunMonty, with_callback: bool):
+    def os_handler(**_: Any) -> object:
+        return NOT_HANDLED
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import random\nrandom.random()', os=os_handler if with_callback else None, checkout=CALL_HOST_RANDOM)
+    assert str(exc_info.value) == snapshot("RuntimeError: 'os.urandom' is not supported in this environment")
+
+
+def test_random_start_call_host_rejects_short_entropy(monty_run: RunMonty):
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bytes:
+        return b'abc'
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import random\nrandom.random()', os=os_handler, checkout=CALL_HOST_RANDOM)
+    assert str(exc_info.value) == snapshot("RuntimeError: 'os.urandom' returned 3 bytes, expected 2496")
+
+
+# Auto OS calls: timezone
+
+
+def test_timezone_fixed_offset_and_name(monty_run: RunMonty):
+    """A fixed zone shifts naive `now()` and `today()`; `time.time()` and aware `now(tz)` are unaffected."""
+    frozen = datetime.datetime(2024, 1, 15, 23, 30, 5)
+    code = (
+        'import time\nfrom datetime import date, datetime, timezone\n'
+        '(datetime.now(), date.today(), time.time(), datetime.now(timezone.utc))'
+    )
+    zone = {'offset_seconds': 3600, 'name': 'CET'}
+    result = monty_run(code, checkout={'auto_os_calls': {'datetime': frozen, 'timezone': zone}})
+    assert result == snapshot(
+        (
+            datetime.datetime(2024, 1, 16, 0, 30, 5),
+            datetime.date(2024, 1, 16),
+            1705361405.0,
+            datetime.datetime(2024, 1, 15, 23, 30, 5, tzinfo=datetime.timezone.utc),
+        )
+    )
+
+
+def test_timezone_system_with_a_fixed_instant(monty_run: RunMonty):
+    frozen = datetime.datetime(2024, 7, 1, 12, 0, tzinfo=datetime.timezone.utc)
+    code = 'from datetime import datetime, timezone\n(datetime.now() - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()'
+    result = monty_run(code, checkout={'auto_os_calls': {'datetime': frozen, 'timezone': 'system'}})
+    host_offset = frozen.astimezone().utcoffset()
+    assert host_offset is not None
+    assert result == host_offset.total_seconds()
+
+
+def test_timezone_call_host_sends_only_the_naive_calls(monty_run: RunMonty):
+    """Only the calls that need the zone reach the handler; `time.time()` and `now(tz)` are answered in the worker."""
+    calls: list[str] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append(name)
+        return datetime.date(2001, 2, 3) if name == 'date.today' else datetime.datetime(2001, 2, 3, 4, 5)
+
+    frozen = datetime.datetime(2024, 1, 15, 10, 30, 5)
+    code = (
+        'import time\nfrom datetime import date, datetime, timezone\n'
+        '(date.today(), datetime.now(), time.time(), datetime.now(timezone.utc))'
+    )
+    result = monty_run(code, os=os_handler, checkout={'auto_os_calls': {'datetime': frozen, 'timezone': 'call_host'}})
+    assert result == snapshot(
+        (
+            datetime.date(2001, 2, 3),
+            datetime.datetime(2001, 2, 3, 4, 5),
+            1705314605.0,
+            datetime.datetime(2024, 1, 15, 10, 30, 5, tzinfo=datetime.timezone.utc),
+        )
+    )
+    assert calls == snapshot(['date.today', 'datetime.now'])
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        (
+            'mars',
+            ValueError,
+            "timezone must be 'system', 'call_host' or {'offset_seconds': int, 'name': str}, got 'mars'",
+        ),
+        (
+            {'name': 'CET'},
+            ValueError,
+            "timezone must be 'system', 'call_host' or {'offset_seconds': int, 'name': str}, got {'name': 'CET'}",
+        ),
+        ({'offset_seconds': True}, TypeError, 'timezone offset_seconds must be an int'),
+        ({'offset_seconds': 86_400}, ValueError, 'timezone offset_seconds must be within -86399..=86399, got 86400'),
+        ({'offset_seconds': 0, 'name': 1}, TypeError, 'timezone name must be a str'),
+        (3600, TypeError, "timezone must be 'system', 'call_host' or {'offset_seconds': int, 'name': str}, not int"),
+    ],
+)
+def test_timezone_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(auto_os_calls={'timezone': value})
+    assert str(exc_info.value) == message
+
+
+def test_auto_os_calls_rejects_unknown_keys(pool: Monty):
+    with pytest.raises(ValueError) as exc_info:
+        pool.checkout(auto_os_calls={'sleeps': 'zero'})  # pyright: ignore[reportArgumentType]
+    assert str(exc_info.value) == snapshot(
+        "unknown auto_os_calls key 'sleeps', expected one of: datetime, timezone, sleep, sleep_system_max, random_start"
+    )
+    with pytest.raises(TypeError) as exc_info:
+        pool.checkout(auto_os_calls='zero')  # pyright: ignore[reportArgumentType]
+    assert str(exc_info.value) == snapshot('auto_os_calls must be a dict, not str')

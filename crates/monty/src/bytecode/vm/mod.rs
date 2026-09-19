@@ -42,12 +42,15 @@ use crate::{
     modules::{StandardLib, json::JsonStringCache, random::apply_seed_random, re::RePatternCache},
     name_map::NameMap,
     object_bridge::MontyObjectExt,
-    os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect, resolve_call_paths},
+    os_dispatch::{
+        PendingEffect, PostConversionEffect, release_pending_effect, resolve_call_paths, urandom_reply_error,
+    },
     parse::CodeRange,
     run::{Program, SessionTables, VmEnv},
     types::{
-        Dict, LongInt, PyTrait, Random,
+        Dict, LongInt, PyTrait, SessionRandom,
         file::{apply_buffer_store, apply_open_name, apply_write_position},
+        random::SEED_BYTES,
         str::allocate_string,
     },
     value::{EitherStr, Value},
@@ -68,16 +71,13 @@ enum AwaitResult {
     Yield(Vec<CallId>),
 }
 
-/// Yields to the host when an exception left no task to run.
-///
-/// A spawned task whose exception nobody could receive is discarded with no
-/// successor loaded, leaving the parked frame `cleanup_current_task` installs,
-/// which dispatch must not execute. See [`VM::yield_parked`] for what is
-/// handed back.
+/// Yields when an unhandled task exception leaves `cleanup_current_task`'s
+/// parked frame with no successor. Dispatch must not execute that frame.
+/// [`VM::pending_futures_exit`] returns surviving tasks' pending calls.
 macro_rules! yield_if_parked {
     ($self:expr) => {
         if $self.current_frame.is_parked {
-            return $self.yield_parked();
+            return $self.pending_futures_exit();
         }
     };
 }
@@ -706,8 +706,8 @@ pub struct VMSnapshot {
 
     /// Working directory at the pause, including any `os.chdir` so far.
     cwd: String,
-    /// The module-level `random` generator at the pause, seeded or not.
-    random: Random,
+    /// The session's `random` state at the pause.
+    random: SessionRandom,
 }
 
 impl VMSnapshot {
@@ -717,7 +717,7 @@ impl VMSnapshot {
     /// globals, working directory and `random` generator so an abandoned REPL
     /// snippet keeps its namespace, any `os.chdir` it made and any seed it
     /// set. Mirrors `VM::drop`.
-    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String, Random) {
+    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String, SessionRandom) {
         let Self {
             stack,
             globals,
@@ -886,11 +886,9 @@ pub struct VM<'h> {
     /// snapshotted (a pure performance cache), so default-initialized on restore.
     pub(crate) re_pattern_cache: RePatternCache,
 
-    /// The module-level `random` generator behind `random.random()` and
-    /// friends. Session state like the globals: it travels in snapshots and,
-    /// through the REPL, from one feed to the next, so a `random.seed()` keeps
-    /// governing later draws.
-    pub(crate) random: Random,
+    /// Module generator and state for initializing unseeded generators.
+    /// Preserved across snapshots and REPL feeds, including `random.seed()` changes.
+    pub(crate) random: SessionRandom,
 
     /// Working directory, `__file__` inputs and the assert-repr cap for this
     /// run. Rebuilt from the executor on restore, except the working
@@ -933,7 +931,7 @@ impl<'h> VM<'h> {
             namespace_scratch: Vec::new(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
-            random: Random::default(),
+            random: SessionRandom::default(),
             env: program.vm_env(),
         }
     }
@@ -2091,17 +2089,31 @@ impl<'h> VM<'h> {
                 obj
             }
         };
+        // Output-only entropy replies must raise the os.urandom contract error at the draw.
+        let seeding = matches!(
+            self.pending_effect,
+            Some(PendingEffect::Post(PostConversionEffect::SeedRandom { .. }))
+        );
+        let reply_type = seeding.then(|| obj.as_ref().type_name().to_owned());
         // Surface resource-exhaustion failures from `to_value` (e.g. a host
         // string whose `heap.allocate` trips `max_memory`) as the same
         // `RunError::Resource` that pure-Monty allocations produce, so the
         // user sees `MemoryError` instead of `RuntimeError: invalid return
         // type`. Other input errors stay as `RuntimeError`.
-        let value = obj.to_value(self).map_err(|e| match e {
-            InvalidInputError::Resource(err) => RunError::from(err),
-            other @ InvalidInputError::InvalidType(_) => {
-                SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {other}"))).into()
+        let value = match obj.to_value(self) {
+            Ok(value) => value,
+            Err(InvalidInputError::Resource(err)) => return Err(RunError::from(err)),
+            Err(InvalidInputError::InvalidType(_)) if let Some(type_name) = reply_type => {
+                let effect = self.pending_effect.take();
+                release_pending_effect(effect, self.heap);
+                return self.resume_with_exception(urandom_reply_error(Err(&type_name), SEED_BYTES));
             }
-        })?;
+            Err(other @ InvalidInputError::InvalidType(_)) => {
+                return Err(
+                    SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {other}"))).into(),
+                );
+            }
+        };
         let result = match self.pending_effect.take() {
             Some(PendingEffect::Post(PostConversionEffect::BufferStore { file_id })) => {
                 apply_buffer_store(file_id, value, self)
@@ -2334,18 +2346,15 @@ impl<'h> VM<'h> {
         self.scheduler.cleanup(self.heap);
     }
 
-    /// Hands the surviving tasks' pending calls back to the host, for
-    /// [`yield_if_parked`] when dispatch has no frame left to run.
-    ///
-    /// Those tasks are parked on external calls, so there is normally
-    /// something to hand over. With nothing pending there is no way forward
-    /// either: resuming would fail the same way one round-trip later, blaming
-    /// the scheduler rather than the discarded task that emptied it.
-    fn yield_parked(&self) -> Result<FrameExit, RunError> {
+    /// Returns surviving tasks' pending calls when every task is blocked
+    /// or [`yield_if_parked`] detects that dispatch has no runnable frame.
+    /// With no pending calls, report the stall now: resuming cannot progress
+    /// and would obscure the discarded task that caused it.
+    pub(super) fn pending_futures_exit(&self) -> Result<FrameExit, RunError> {
         let pending_call_ids = self.scheduler.pending_call_ids();
         if pending_call_ids.is_empty() {
             Err(RunError::internal(
-                "asyncio scheduler stalled: exception discarded with no task to run and no pending external calls",
+                "asyncio scheduler stalled: no task to run and no pending external calls",
             ))
         } else {
             Ok(FrameExit::ResolveFutures(pending_call_ids))

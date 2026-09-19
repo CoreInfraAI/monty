@@ -1,13 +1,12 @@
 //! Implementation of the `time` module.
 //!
-//! Two functions, both of which need the host: `time()` reads its clock and
-//! `sleep()` asks it to wait. Neither is served in the interpreter — they
-//! yield an [`OsFunctionCall`] the host permits, serves or refuses, exactly
-//! like `date.today()`. See `limitations/time.md` for what diverges from
-//! CPython; the monotonic clocks and the `struct_time` family are absent
-//! rather than stubbed, so they raise `AttributeError` up front.
+//! `time()` and `sleep()` follow the session's `AutoOsCalls` policies.
+//! Monotonic clocks and the `struct_time` family raise `AttributeError`.
+//! See `limitations/time.md` for CPython divergences.
 
-use monty_types::{OsFunctionCall, SleepError, sleep_duration};
+use std::time::Duration;
+
+use monty_types::{OsFunctionCall, SleepError, SleepMode, sleep_duration, unix_seconds};
 use num_traits::ToPrimitive;
 
 use crate::{
@@ -18,7 +17,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
-    types::{Module, PyTrait},
+    types::{Module, PyTrait, datetime::sandbox_instant},
     value::Value,
 };
 
@@ -56,24 +55,18 @@ pub(super) fn call(vm: &mut VM<'_>, function: TimeFunctions, args: ArgValues) ->
     }
 }
 
-/// `time.time()` — seconds since the Unix epoch, as a float.
-///
-/// The host answers from whatever clock it exposes, so the value need not
-/// agree with the machine's wall clock (and a host with no clock refuses it).
+/// Reads epoch seconds from the session's clock, or the host under `CallHost`.
 fn time(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("time.time", vm.heap)?;
-    Ok(CallResult::OsCall(OsFunctionCall::Time))
+    match sandbox_instant(vm)? {
+        None => Ok(CallResult::OsCall(OsFunctionCall::Time)),
+        Some(utc) => Ok(CallResult::Value(Value::Float(unix_seconds(utc)))),
+    }
 }
 
-/// `time.sleep(seconds)` — suspend until the host says the wait is over.
-///
-/// The sandbox holds no clock and cannot block, so the wait is the host's to
-/// perform; [`PostConversionEffect::DiscardResult`] then makes the call
-/// evaluate to `None` whatever the host answered with, matching CPython.
-///
-/// The duration limits do not run while the sandbox is suspended, so a sleep
-/// is bounded by the host's own turn deadline and by `max_suspensions` rather
-/// than by `max_feed_duration`/`max_turn_duration` (see `limitations/time.md`).
+/// Validates the delay in every mode, then applies [`host_sleep`].
+/// [`PostConversionEffect::DiscardResult`] makes the call return `None`
+/// regardless of the host's answer; `Zero` skips the wait.
 fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     // METH_O in CPython: keywords are refused wholesale, before arity.
     let seconds = args
@@ -87,10 +80,34 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         })
     });
     seconds.drop_with(vm.heap);
+    let duration = result?;
+    let call = match host_sleep(vm, duration) {
+        Some(HostSleep::System(delay)) => OsFunctionCall::SystemSleep(delay),
+        Some(HostSleep::CallHost(delay)) => OsFunctionCall::Sleep(delay),
+        None => return Ok(CallResult::Value(Value::None)),
+    };
     Ok(CallResult::OsCallWithEffect {
-        call: OsFunctionCall::Sleep(result?),
+        call,
         effect: PostConversionEffect::DiscardResult.into(),
     })
+}
+
+/// Sleep destination and delay after applying the session policy.
+pub(crate) enum HostSleep {
+    /// The host itself, for a delay already cut to the mode's maximum.
+    System(Duration),
+    /// The host's `os` handler, with the requested delay uncapped.
+    CallHost(Duration),
+}
+
+/// Applies the sleep policy, returning `None` for `SleepMode::Zero`.
+/// The call kind tells the host who waits without needing the session policy.
+pub(crate) fn host_sleep(vm: &VM<'_>, delay: Duration) -> Option<HostSleep> {
+    match vm.env.auto_os_calls.sleep {
+        SleepMode::System(max) => Some(HostSleep::System(delay.min(max))),
+        SleepMode::CallHost => Some(HostSleep::CallHost(delay)),
+        SleepMode::Zero => None,
+    }
 }
 
 /// Converts a sleep length to float seconds the way CPython's

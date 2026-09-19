@@ -461,6 +461,138 @@ pub struct ResourceLimits {
     pub max_feed_duration_micros: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "7")]
     pub max_turn_duration_micros: ::core::option::Option<u64>,
+    /// Cumulative budget for system sleeps, enforced by the parent.
+    #[prost(uint64, optional, tag = "8")]
+    pub max_total_sleep_micros: ::core::option::Option<u64>,
+}
+/// Mirrors monty's `AutoOsCalls`: which OS calls the sandbox answers itself.
+/// Each unset arm means that field's default.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AutoOsCalls {
+    /// The local zone naive `datetime.now()` and `date.today()` read in.
+    /// Absent (or with no arm set) = the child's local zone.
+    #[prost(message, optional, tag = "4")]
+    pub timezone: ::core::option::Option<SandboxTimeZone>,
+    /// What `time.sleep()` and `asyncio.sleep()` do.
+    /// Absent (or with no arm set) = system sleep with the default maximum.
+    #[prost(message, optional, tag = "5")]
+    pub sleep: ::core::option::Option<SleepMode>,
+    /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
+    #[prost(oneof = "auto_os_calls::Datetime", tags = "1, 2, 3")]
+    pub datetime: ::core::option::Option<auto_os_calls::Datetime>,
+    /// Where an unseeded `random` generator gets its first state.
+    #[prost(oneof = "auto_os_calls::RandomStart", tags = "6, 7, 8")]
+    pub random_start: ::core::option::Option<auto_os_calls::RandomStart>,
+}
+/// Nested message and enum types in `AutoOsCalls`.
+pub mod auto_os_calls {
+    /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Datetime {
+        /// The child's clock.
+        #[prost(message, tag = "1")]
+        System(super::Unit),
+        /// Suspend to the parent's OS handler.
+        #[prost(message, tag = "2")]
+        CallHost(super::Unit),
+        /// One frozen instant, for reproducible runs.
+        #[prost(message, tag = "3")]
+        Fixed(super::FixedDateTime),
+    }
+    /// Where an unseeded `random` generator gets its first state.
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum RandomStart {
+        /// From the child's own OS entropy.
+        #[prost(message, tag = "6")]
+        RandomSystem(super::Unit),
+        /// Suspend the first draw with an `os.urandom` call for 2496 bytes.
+        #[prost(message, tag = "7")]
+        RandomCallHost(super::Unit),
+        /// As `random.seed(seed)` would, for reproducible runs.
+        #[prost(message, tag = "8")]
+        Seed(super::RandomSeed),
+    }
+}
+/// Mirrors monty's `SandboxTimeZone`.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SandboxTimeZone {
+    #[prost(oneof = "sandbox_time_zone::Zone", tags = "1, 2, 3")]
+    pub zone: ::core::option::Option<sandbox_time_zone::Zone>,
+}
+/// Nested message and enum types in `SandboxTimeZone`.
+pub mod sandbox_time_zone {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Zone {
+        /// The child's local zone.
+        #[prost(message, tag = "1")]
+        System(super::Unit),
+        /// Suspend the calls that need the zone to the parent.
+        #[prost(message, tag = "2")]
+        CallHost(super::Unit),
+        /// A fixed offset from UTC, with a name if it has one.
+        #[prost(message, tag = "3")]
+        Fixed(super::TimeZone),
+    }
+}
+/// Mirrors monty's `SleepMode`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SleepMode {
+    #[prost(oneof = "sleep_mode::Mode", tags = "1, 2, 3")]
+    pub mode: ::core::option::Option<sleep_mode::Mode>,
+}
+/// Nested message and enum types in `SleepMode`.
+pub mod sleep_mode {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Mode {
+        /// The parent waits without invoking its OS handler.
+        #[prost(message, tag = "1")]
+        System(super::SystemSleep),
+        /// Suspend to the parent, which performs the wait.
+        #[prost(message, tag = "2")]
+        CallHost(super::Unit),
+        /// Return at once without waiting.
+        #[prost(message, tag = "3")]
+        Zero(super::Unit),
+    }
+}
+/// A sleep capped by the child and performed by the parent.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SystemSleep {
+    /// Longest wait one call performs; longer sleeps are cut short. Absent = 10s.
+    #[prost(uint64, optional, tag = "1")]
+    pub max_micros: ::core::option::Option<u64>,
+}
+/// A frozen clock reading.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FixedDateTime {
+    /// Seconds since the Unix epoch, UTC.
+    #[prost(int64, tag = "1")]
+    pub unix_seconds: i64,
+    /// 0..=999999; anything larger is rejected.
+    #[prost(uint32, tag = "2")]
+    pub microsecond: u32,
+}
+/// A `random.seed()` argument: the types CPython accepts.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RandomSeed {
+    #[prost(oneof = "random_seed::Value", tags = "1, 2, 3, 4")]
+    pub value: ::core::option::Option<random_seed::Value>,
+}
+/// Nested message and enum types in `RandomSeed`.
+pub mod random_seed {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Value {
+        /// Arbitrary-size two's-complement little-endian bytes (`BigInt::to_signed_bytes_le`).
+        #[prost(bytes, tag = "1")]
+        Int(::prost::alloc::vec::Vec<u8>),
+        /// Must be finite.
+        #[prost(double, tag = "2")]
+        Float(f64),
+        #[prost(string, tag = "3")]
+        Str(::prost::alloc::string::String),
+        #[prost(bytes, tag = "4")]
+        Bytes(::prost::alloc::vec::Vec<u8>),
+    }
 }
 /// Outcome of an external function / OS call, decided by the parent. Mirrors
 /// monty's `ExtFunctionResult`, plus `not_handled` (which only the child can
@@ -561,7 +693,7 @@ pub mod parent_request {
 /// the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
 /// worker can still be initialized by `Load` instead. Valid only when the
 /// worker has no session yet.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Configure {
     #[prost(string, tag = "1")]
     pub script_name: ::prost::alloc::string::String,
@@ -615,6 +747,10 @@ pub struct Configure {
     /// the field trades streaming latency for event volume and nothing else.
     #[prost(uint32, optional, tag = "10")]
     pub print_flush_interval_ms: ::core::option::Option<u32>,
+    /// Absent = `AutoOsCalls::default()`: the child's clock, local zone and entropy,
+    /// with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
+    #[prost(message, optional, tag = "11")]
+    pub auto_os_calls: ::core::option::Option<AutoOsCalls>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -769,6 +905,9 @@ pub struct ChildEvent {
     pub max_feed_duration_micros: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "26")]
     pub max_turn_duration_micros: ::core::option::Option<u64>,
+    /// Parent-enforced sleep budget, also reported on `Load`.
+    #[prost(uint64, optional, tag = "27")]
+    pub max_total_sleep_micros: ::core::option::Option<u64>,
     /// The session's script name, surfaced on a `Load` reply so a parent that
     /// restored a session (whose script name, like the limits above, travels
     /// inside the opaque dump bytes) learns it without parsing the dump. Set only
@@ -885,7 +1024,7 @@ pub struct OsCall {
     pub allow_eager_await: bool,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -1056,12 +1195,18 @@ pub mod os_call {
         /// time.time()
         #[prost(message, tag = "26")]
         Time(super::Unit),
-        /// time.sleep(seconds)
+        /// time.sleep(seconds) under `call_host`: the handler waits
         #[prost(message, tag = "27")]
         Sleep(Sleep),
-        /// asyncio.sleep(delay)
+        /// asyncio.sleep(delay) under `call_host`
         #[prost(message, tag = "28")]
         AsyncSleep(AsyncSleep),
+        /// System sleeps: capped by the child, charged to `max_total_sleep` and
+        /// waited out by the parent without invoking its OS handler.
+        #[prost(message, tag = "29")]
+        SystemSleep(Sleep),
+        #[prost(message, tag = "30")]
+        AsyncSystemSleep(AsyncSleep),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether

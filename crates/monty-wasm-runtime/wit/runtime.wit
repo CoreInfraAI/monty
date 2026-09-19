@@ -168,8 +168,7 @@ interface worker {
         value: u32,
     }
 
-    /// Resource limits. The host enforces `max-suspensions`; the sandbox
-    /// enforces the others.
+    /// The host enforces suspension and total sleep limits; the sandbox enforces the others.
     record resource-limits {
         max-feed-duration-micros: option<u64>,
         max-turn-duration-micros: option<u64>,
@@ -177,6 +176,79 @@ interface worker {
         gc-interval: option<u64>,
         max-recursion-depth: option<u64>,
         max-suspensions: option<u64>,
+        /// Maximum cumulative system sleep duration, enforced by the host.
+        max-total-sleep-micros: option<u64>,
+    }
+
+    /// A frozen clock reading (see `auto-os-calls`).
+    record fixed-datetime {
+        /// Seconds since the Unix epoch, UTC.
+        unix-seconds: s64,
+        /// 0..=999999.
+        microsecond: u32,
+    }
+
+    /// A fixed UTC offset with an optional name.
+    record fixed-time-zone {
+        offset-seconds: s32,
+        name: option<string>,
+    }
+
+    /// Local timezone for naive `datetime.now()` and `date.today()`.
+    variant time-zone {
+        /// The worker's local zone.
+        system,
+        /// Delegate calls requiring the local timezone to the host.
+        call-host,
+        fixed(fixed-time-zone),
+    }
+
+    /// What `date.today()`, `datetime.now()` and `time.time()` read.
+    variant datetime-source {
+        /// The worker's own clock.
+        system,
+        /// Delegate clock calls to the host.
+        call-host,
+        /// One frozen instant.
+        fixed(fixed-datetime),
+    }
+
+    /// What `time.sleep()` and `asyncio.sleep()` do.
+    variant sleep-mode {
+        /// The host waits, capped at this duration in microseconds (default 10s).
+        system(option<u64>),
+        call-host,
+        /// Return at once without waiting.
+        zero,
+    }
+
+    /// A `random.seed()` argument: the types CPython accepts.
+    variant random-seed {
+        /// Two's-complement little-endian bytes, any size.
+        int(list<u8>),
+        /// Must be finite.
+        float(f64),
+        str(string),
+        bytes(list<u8>),
+    }
+
+    /// Where an unseeded `random` generator gets its first state.
+    variant random-start {
+        /// The worker's own OS entropy.
+        system,
+        /// Suspend the first draw with an `os.urandom` call for the host.
+        call-host,
+        /// As `random.seed(seed)` would.
+        seed(random-seed),
+    }
+
+    /// Automatic OS call policy; absent fields use the system clock and timezone,
+    /// host sleeps capped at 10s, and OS entropy.
+    record auto-os-calls {
+        datetime: option<datetime-source>,
+        timezone: option<time-zone>,
+        sleep: option<sleep-mode>,
+        random-start: option<random-start>,
     }
 
     /// Available renderings for type-check diagnostics.
@@ -204,6 +276,8 @@ interface worker {
         /// How long the child may hold buffered print output. Absent takes its
         /// default; zero restores line buffering, one event per completed line.
         print-flush-interval-ms: option<u32>,
+        /// Automatic OS call policy; absent uses defaults.
+        auto-os-calls: option<auto-os-calls>,
     }
 
     /// One Python snippet and its host inputs.
@@ -348,6 +422,9 @@ interface worker {
         /// As on `function-call-event`: the host may await its wait and answer
         /// with `resume-futures`. Only ever set on `asyncio.sleep`.
         allow-eager-await: bool,
+        /// System sleep duration for the host to await directly, in seconds.
+        /// The child caps it; the host must cap it again and charge `max-total-sleep` before waiting.
+        system-sleep-secs: option<f64>,
     }
 
     /// A finished feed's value: an index into its arena.
@@ -381,6 +458,8 @@ interface worker {
         /// The current session's suspension limit. A host uses this after
         /// `load`, whose dump replaces the configured session limits.
         max-suspensions: option<u64>,
+        /// Session sleep limit in microseconds, reported for host enforcement after `load`.
+        max-total-sleep-micros: option<u64>,
     }
 
     /// Handles one semantic request using the retained child.

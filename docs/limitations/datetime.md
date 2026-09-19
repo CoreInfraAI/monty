@@ -86,10 +86,8 @@ Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
 `fromisoformat(date_string)`, `combine(date, time, tzinfo=self.tzinfo)`.
 
 - `now()` reads the clock — see "Reading the clock" below.
-- `now(tz)` returns a `datetime` whose `tzinfo` is `==` the input timezone
-    but not `is` it: the original `tzinfo` object isn't threaded through the
-    return path, so a fresh `timezone` is reconstructed from the
-    offset/name. This holds however the call is answered.
+- Host-answered `now(tz)` reconstructs `tzinfo` from its offset and name, so it equals `tz` but is a different object.
+    The default sandbox answer preserves identity, as CPython does.
 - `strptime()` requires the string to carry a date: a time-only format
     (`strptime('12:30', '%H:%M')`) raises
     `ValueError: time data '12:30' does not match format '%H:%M'`, where
@@ -113,41 +111,29 @@ in Monty raises `TypeError: replace expected at most 0 arguments, got N`.
 
 ## Reading the clock
 
-`date.today()` and `datetime.now()` are the only two calls that read a
-clock, and Monty has none of its own. What answers them depends on how the
-sandbox is driven.
+The [session clock](../security.md#the-clock) has separate `datetime` and `timezone` settings.
+`time.time()` shares the `datetime` source (see [time.md](time.md)).
 
-Under the suspend/resume path — every pool session (`pydantic_monty`,
-`@pydantic/monty`, `monty-pool`) and `MontyRun::start` — both reach the host.
-A host that answers neither makes them raise
-`RuntimeError: 'date.today' is not supported in this environment`
-(`'datetime.now'` likewise), where CPython would return a time.
+`datetime`:
 
-Standard (non-suspending) execution — `MontyRun::run`, `MontyRepl::feed_run`
-and `MontyRepl::call_function` in Rust — has no host to ask and reads this
-machine's clock, so it matches CPython. The `monty` CLI reads the same clock,
-though there it is the host answering: it serves both calls itself rather than
-passing them on.
-`MontyRun::with_host_clock` / `MontyRepl::with_host_clock` choose otherwise:
-
-- `HostClock::Denied` makes both raise `NotImplementedError` — a different
-    exception from the suspend path's `RuntimeError` for the same refusal.
-    Through `MontyRun::run` and `MontyRepl::feed_run` the message is
-    `OS function 'datetime.now' not implemented with standard execution`;
-    through `MontyRepl::call_function` it is
+- A fixed instant never advances: repeated `datetime.now()` calls are equal and elapsed-time calculations stay zero.
+    Bindings also set `timezone` unless supplied explicitly: naive Python datetimes and JavaScript dates select UTC;
+    aware Python datetimes supply their offset and name.
+    A Rust fixed instant outside years 1–9999 raises `OverflowError: date value out of range` from all three clock calls.
+- `'call_host'` delegates to the pool's `os=` handler (`OSAccess.date_today()` or `datetime_now()` in Python).
+    Unanswered calls raise `RuntimeError: 'date.today' is not supported in this environment` (`datetime.now` likewise).
+    Non-suspending Rust execution instead raises `NotImplementedError`.
+    `run` and `feed_run` report `OS function 'datetime.now' not implemented with standard execution`;
+    `call_function` reports
     `MontyRepl::call_function: OS function 'datetime.now' is not yet supported in this context`.
-- `HostClock::Fixed` answers every call with one frozen instant, so
-    `datetime.now() == datetime.now()` is `True`, a loop polling
-    `datetime.now()` never sees it move, and `(datetime.now() - start)` is
-    always a zero `timedelta`. An instant outside `datetime`'s 1..=9999 years
-    reads as `Denied` rather than failing some other way.
 
-Whatever answers them, both calls read local wall time for `date.today()`
-and a naive `datetime.now()`, and convert into the argument for
-`datetime.now(tz)`, matching CPython.
+`timezone`:
 
-`time.time()` has no equivalent — the `time` module is not importable at
-all (see ./modules.md).
+- The wasm worker's system timezone is UTC.
+- A fixed zone is a UTC offset with an optional name, without IANA timezone or DST rules.
+    The name is retained but cannot yet be exposed through `astimezone()`, `time.tzname` or naive `%Z` formatting.
+- `'call_host'` delegates `date.today()` and naive `datetime.now()`, which require the local zone.
+    `time.time()` and `datetime.now(tz)` still use the sandbox clock unless `datetime='call_host'` too.
 
 ## `time`
 

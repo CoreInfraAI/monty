@@ -43,18 +43,16 @@ monty --help
 - `--max-memory 10MB`, `--max-feed-duration 0.5`,
   `--max-turn-duration`, `--max-recursion-depth`, `--gc-interval`,
   `--max-suspensions` — sandbox resource limits
-- `--max-sleep 10` — longest wait a `time.sleep()` / `asyncio.sleep()` performs
+- `--max-sleep 10` — longest wait a `time.sleep()` / `asyncio.sleep()` performs,
   in seconds; longer sleeps are cut short (`inf` for no limit)
+- `--max-total-sleep 30` — maximum cumulative time the host waits for those
+  sleeps, in seconds; a sleep that would go over is refused (off unless given)
 
-`date.today()` and `datetime.now()` read this machine's clock and local
-timezone, and `time.time()` its clock as Unix epoch seconds, as they do for any
-in-process run. `MontyRun::with_host_clock` is
-how an embedder chooses otherwise; the CLI has no flag for it. `time.sleep()` and
-`asyncio.sleep()` wait on the running thread, but only where the CLI drives
-suspensions, which is a run with at least one `-m` mount. Nothing answers
-`os.urandom()`, so it and any unseeded `random` draw raise `NotImplementedError`
-(or `RuntimeError` under `--mount`). Seed with an explicit value first, e.g.
-`random.seed(0)`: `random.seed()` with no argument also needs entropy.
+`date.today()` and `datetime.now()` use the system clock and local timezone; `time.time()` returns Unix epoch seconds.
+`time.sleep()` and `asyncio.sleep()` wait for at most `--max-sleep` seconds each.
+An unseeded `random` draw uses system entropy.
+Rust embedders can change these defaults with `MontyRun::with_auto_os_calls`; the CLI only exposes the sleep limits.
+`os.urandom()` raises `NotImplementedError` (or `RuntimeError` under `--mount`) because the CLI has no handler for it.
 
 ## Worker mode
 

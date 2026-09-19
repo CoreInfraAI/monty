@@ -207,10 +207,12 @@ let err = runner.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout).
 assert!(err.to_string().contains("feed time limit exceeded"));
 ```
 
-### Reading the clock
+### The clock, sleeping and entropy
 
-`run` has no host to ask, so it answers `date.today()`, `datetime.now()` and `time.time()` from a clock of its own —
-this machine's, unless you choose otherwise:
+Both `run` and `start` answer clock calls from the system clock and seed unseeded generators from OS entropy.
+Sleeps are capped at ten seconds per call.
+`run` waits inline; `start` returns `RunProgress::OsCall` with `SystemSleep` or `AsyncSystemSleep`.
+Wait for the requested delay and answer with `None`, or a future for `asyncio.sleep()`:
 
 ```rust
 use monty::MontyRun;
@@ -222,16 +224,37 @@ let year = runner.run(vec![], ResourceTracker::default(), PrintWriter::Stdout).u
 assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
 ```
 
-`with_host_clock` changes that: `HostClock::Denied` takes the clock away, for embedders who would rather sandboxed code
-could not read their wall time at all, and `HostClock::Fixed` freezes an instant, for runs that have to be reproducible.
+`with_auto_os_calls` configures each operation.
+`DateTimeSource::Fixed` freezes the clock, `SandboxTimeZone::Fixed` sets the local UTC offset, and
+`RandomStart::Seed` seeds `random` for reproducible runs.
+`SleepMode::Zero` skips waits; `SleepMode::System(max)` sets their cap.
+`CallHost` delegates through `RunProgress::OsCall` under `start`, or raises `NotImplementedError` under `run`:
 
-`start` ignores this: there the call pauses and the host answers it, like any other OS call, and the same is true of
-every pool session (see [the clock](../security.md#the-clock)).
-Entropy has no in-process fallback.
-Under `run`, an unseeded `random` draw or `os.urandom()` raises `NotImplementedError`.
-Under `start` it pauses on an `os.urandom` call for the host to answer (see [random](../limitations/random.md)).
-`time.sleep()` and `asyncio.sleep()` always pause for the host, whatever the clock: waiting is something only a host can
-bound (see [time](../limitations/time.md)).
+```rust
+use monty::MontyRun;
+use monty_types::{
+    AutoOsCalls, CompileOptions, DateTimeSource, MontyObject, PrintWriter, RandomSeed, RandomStart, ResourceTracker,
+    SandboxTimeZone, SleepMode,
+};
+
+let calls = AutoOsCalls {
+    datetime: DateTimeSource::Fixed { unix_seconds: 1_700_000_000, microsecond: 0 },
+    timezone: SandboxTimeZone::Fixed { offset_seconds: 0, name: Some("UTC".to_owned()) },
+    sleep: SleepMode::Zero,
+    random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
+};
+let code = "import random, time\nfrom datetime import date\ntime.sleep(3600)\n(date.today().year, random.random())";
+let mut runner = MontyRun::new(code.to_owned(), "fixed.py", vec![], CompileOptions::default())
+    .unwrap()
+    .with_auto_os_calls(calls);
+let result = runner.run(vec![], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
+// CPython: random.seed(42); random.random()
+assert_eq!(result, MontyObject::tuple([MontyObject::int(2023), MontyObject::float(0.6394267984578837)]));
+```
+
+Every pool session takes the same struct as `ReplConfig::auto_os_calls` (see [the clock](../security.md#the-clock)).
+`os.urandom()` is the one call with no in-process answer: under `run` it raises `NotImplementedError`, under `start`
+it pauses for the host (see [random](../limitations/random.md)).
 
 ### Host functions and pausing
 
