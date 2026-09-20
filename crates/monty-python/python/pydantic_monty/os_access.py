@@ -27,6 +27,9 @@ if TYPE_CHECKING:
     # Self is 3.11+, hence this
     from typing import Self
 
+    # only an annotation here; importing at runtime would be circular
+    from . import TimeCaller
+
 __all__ = (
     'OsFunction',
     'AbstractOS',
@@ -270,7 +273,7 @@ class AbstractOS(ABC):
             case 'os.urandom':
                 return self.urandom(*args)
             case 'time.time':
-                return self.time()
+                return self.time(*args)
             # `feed_start` callers can dispatch system sleeps manually.
             case 'time.sleep' | 'system.sleep':
                 return self.sleep(*args)
@@ -606,11 +609,16 @@ class AbstractOS(ABC):
             raise MemoryError(f'os.urandom() size exceeds max_urandom_bytes ({self.max_urandom_bytes})')
         return os.urandom(size)
 
-    def time(self) -> float:
-        """Return the epoch seconds for Monty's `time.time()` callback.
+    def time(self, caller: TimeCaller = 'time.time') -> float:
+        """Return the epoch seconds for Monty's `time` module clocks.
 
         Reached only under `auto_os_calls={'datetime': 'call_host'}`; override it
         alongside `date_today()` and `datetime_now()` for a virtual clock.
+        An override must accept `caller`: the dispatcher passes it positionally.
+
+        Args:
+            caller: The `time` function that asked, e.g. `'time.monotonic'`; ignore it
+                unless each clock should read differently.
         """
         return time.time()
 
