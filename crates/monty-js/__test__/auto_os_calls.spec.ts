@@ -1,6 +1,7 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 import type { AutoOsCalls, MontyDate, MontyDateTime } from '@pydantic/monty'
+import { kind } from './env.js'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -59,24 +60,38 @@ test('a fixed timezone shifts the naive calls only', async () => {
   t.is(epoch, 1705361405)
 })
 
-test('call_host on the timezone sends only the naive calls to the os callback', async () => {
-  const calls: string[] = []
+test('a named zone applies its DST rules in the worker', async () => {
   const frozen = new Date('2024-01-15T10:30:05Z')
-  const code = 'import time\nfrom datetime import date, datetime, timezone\n(datetime.now(timezone.utc), time.time())'
-  const [aware, epoch] = (await runWith(code, { datetime: frozen, timezone: 'call_host' }, (name) => {
-    calls.push(name)
-    return null
-  })) as [MontyDateTime, number]
-  t.is(aware.hour, 10)
-  t.is(epoch, 1705314605)
-  t.deepEqual(calls, [])
-  const today: MontyDate = { __monty_type__: 'Date', year: 2001, month: 2, day: 3 }
-  const result = await runWith('from datetime import date\ndate.today()', { timezone: 'call_host' }, (name) => {
-    calls.push(name)
-    return today
-  })
-  t.deepEqual(result, today)
-  t.deepEqual(calls, ['date.today'])
+  const code = [
+    'import time',
+    'from datetime import datetime, timezone',
+    '(datetime.now().hour, datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc).astimezone().strftime("%H:%M %Z %z"),',
+    ' datetime(2024, 10, 27, 1, 30).astimezone(timezone.utc).hour, time.timezone, time.altzone, time.daylight, time.tzname)',
+  ].join('\n')
+  t.deepEqual(await runWith(code, { datetime: frozen, timezone: 'Europe/London' }), [
+    10,
+    '13:30 BST +0100',
+    0,
+    0,
+    -3600,
+    1,
+    ['GMT', 'BST'],
+  ])
+})
+
+test('astimezone and the time constants read the sandbox zone, UTC by default', async () => {
+  const code = [
+    'import time',
+    'from datetime import datetime, timezone',
+    '(datetime(2024, 6, 15, 12, 30).astimezone().strftime("%H:%M %Z %z"), time.timezone, time.tzname)',
+  ].join('\n')
+  t.deepEqual(await runWith(code, {}), ['12:30 UTC +0000', 0, ['UTC', 'UTC']])
+  t.deepEqual(await runWith(code, { timezone: 'utc' }), ['12:30 UTC +0000', 0, ['UTC', 'UTC']])
+  t.deepEqual(await runWith(code, { timezone: { offsetSeconds: 7200, name: 'EET' } }), [
+    '12:30 EET +0200',
+    -7200,
+    ['EET', 'EET'],
+  ])
 })
 
 test('call_host sends the clock to the os callback', async () => {
@@ -101,7 +116,14 @@ test('invalid datetime and timezone values are rejected before the checkout', as
     instanceOf: RangeError,
     message: 'timezone offsetSeconds must be an integer number of seconds',
   })
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { name: 'CET' } as unknown as 'system' } }), {
+  // the native binding resolves the name before spawning; the wasm worker is the first to see it
+  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: 'Mars/Olympus' } }), {
+    message:
+      kind === 'browser'
+        ? "Configure failed: protocol violation: invalid auto_os_calls: invalid value for SandboxTimeZone.named: unknown timezone 'Mars/Olympus'"
+        : "timezone: unknown timezone 'Mars/Olympus'",
+  })
+  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { name: 'CET' } as unknown as 'utc' } }), {
     instanceOf: TypeError,
   })
   await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { offsetSeconds: 86_400 } } }), {

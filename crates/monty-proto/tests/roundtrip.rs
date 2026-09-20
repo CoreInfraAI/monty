@@ -605,12 +605,42 @@ fn auto_os_calls_round_trip() {
     for sleep in [SleepMode::CallHost, SleepMode::Zero] {
         let calls = AutoOsCalls {
             datetime: DateTimeSource::CallHost,
-            timezone: SandboxTimeZone::CallHost,
+            timezone: SandboxTimeZone::named("Europe/London").unwrap(),
             sleep,
             random_start: RandomStart::CallHost,
         };
         assert_eq!(AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap(), calls);
     }
+    // the UTC default has its own arm, so an explicit UTC survives a parent with a different default
+    let utc = pb::AutoOsCalls::from(&AutoOsCalls::default());
+    assert_eq!(
+        utc.timezone,
+        Some(pb::SandboxTimeZone {
+            zone: Some(pb::sandbox_time_zone::Zone::Utc(pb::Unit {})),
+        })
+    );
+    assert_eq!(AutoOsCalls::try_from(utc).unwrap().timezone, SandboxTimeZone::utc());
+    // a named zone crosses as its IANA name, which the child resolves against its own database
+    let london = pb::AutoOsCalls::from(&AutoOsCalls {
+        timezone: SandboxTimeZone::named("Europe/London").unwrap(),
+        ..AutoOsCalls::default()
+    });
+    assert_eq!(
+        london.timezone,
+        Some(pb::SandboxTimeZone {
+            zone: Some(pb::sandbox_time_zone::Zone::Named("Europe/London".to_owned())),
+        })
+    );
+    let unknown = pb::AutoOsCalls {
+        timezone: Some(pb::SandboxTimeZone {
+            zone: Some(pb::sandbox_time_zone::Zone::Named("Mars/Olympus".to_owned())),
+        }),
+        ..pb::AutoOsCalls::default()
+    };
+    assert_eq!(
+        AutoOsCalls::try_from(unknown).unwrap_err().to_string(),
+        "invalid value for SandboxTimeZone.named: unknown timezone 'Mars/Olympus'"
+    );
 }
 
 #[test]
@@ -1071,4 +1101,20 @@ fn shutdown_event_round_trips() {
     };
     let back = decode_frame::<pb::ChildEvent>(bare.encode_to_vec().as_slice()).expect("bare ShutdownDump decodes");
     assert_eq!(back, bare);
+}
+
+/// A child-supplied fixed offset outside `datetime.timezone`'s range is refused
+/// before it can reach a host as a `MontyTimeZone`.
+#[test]
+fn out_of_range_now_timezone_is_rejected() {
+    let call = pb::os_call::Call::DateTimeNow(pb::os_call::DateTimeNow {
+        tz: Some(pb::TimeZone {
+            offset_seconds: i32::MIN,
+            name: None,
+        }),
+    });
+    assert_eq!(
+        OsFunctionCall::try_from(call).unwrap_err().to_string(),
+        "invalid value for TimeZone.offset_seconds: -2147483648 is outside the range -86399..=86399"
+    );
 }

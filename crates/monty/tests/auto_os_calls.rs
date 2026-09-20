@@ -4,7 +4,6 @@
 
 use std::time::{Duration, Instant};
 
-use chrono::{Local, Offset, TimeZone};
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
@@ -29,11 +28,11 @@ const PLUS_TWO: SandboxTimeZone = SandboxTimeZone::Fixed {
     name: None,
 };
 
-/// Use UTC+02:00 for fixed instants to make expectations independent of the host zone.
+/// Fixed instants use UTC+02:00, so the date-changing offset is exercised; the rest keep the UTC default.
 fn with_datetime(datetime: DateTimeSource) -> AutoOsCalls {
     let timezone = match datetime {
         DateTimeSource::Fixed { .. } => PLUS_TWO,
-        DateTimeSource::CallHost | DateTimeSource::System => SandboxTimeZone::System,
+        DateTimeSource::CallHost | DateTimeSource::System => SandboxTimeZone::default(),
     };
     AutoOsCalls {
         datetime,
@@ -75,7 +74,7 @@ fn run_repr(expr: &str, datetime: DateTimeSource) -> String {
 }
 
 fn run_repr_under(expr: &str, calls: AutoOsCalls) -> String {
-    let code = format!("from datetime import date, datetime, timedelta, timezone\nrepr({expr})");
+    let code = format!("import time\nfrom datetime import date, datetime, timedelta, timezone\nrepr({expr})");
     let obj = run(&code, calls).unwrap();
     (&obj).try_into().unwrap()
 }
@@ -221,49 +220,325 @@ fn out_of_range_microsecond_raises() {
     );
 }
 
-/// A CallHost zone delegates only naive now() and today(); time() and now(tz) stay local.
+/// The default zone is UTC; a named zone shifts only
+/// naive now() and today(), while time() and now(tz) stay UTC.
 #[test]
 fn the_zone_is_chosen_separately_from_the_instant() {
-    let system_zone = AutoOsCalls {
+    let utc_zone = AutoOsCalls {
         datetime: FIXED,
-        timezone: SandboxTimeZone::System,
         ..AutoOsCalls::default()
     };
     let code = "from datetime import datetime, timezone\n\
                 (datetime.now() - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()";
-    // the host's offset at the instant read, not now: DST may differ
-    let host_offset = Local
-        .timestamp_opt(FIXTURE_SECONDS, 0)
-        .unwrap()
-        .offset()
-        .fix()
-        .local_minus_utc();
-    assert_eq!(
-        run(code, system_zone).unwrap(),
-        MontyObject::float(f64::from(host_offset))
-    );
+    assert_eq!(run(code, utc_zone).unwrap(), MontyObject::float(0.0));
 
-    let host_zone = AutoOsCalls {
+    // a named zone applies its rules at the instant: London is on GMT in November
+    let london = AutoOsCalls {
         datetime: FIXED,
-        timezone: SandboxTimeZone::CallHost,
+        timezone: SandboxTimeZone::named("Europe/London").unwrap(),
         ..AutoOsCalls::default()
     };
     assert_eq!(
-        run("import time\ntime.time()", host_zone.clone()).unwrap(),
+        run("import time\ntime.time()", london.clone()).unwrap(),
         MontyObject::float(1_700_000_000.123_456)
     );
     assert_eq!(
-        run_repr_under("datetime.now(timezone.utc)", host_zone.clone()),
+        run_repr_under("datetime.now(timezone.utc)", london.clone()),
         "datetime.datetime(2023, 11, 14, 22, 13, 20, 123456, tzinfo=datetime.timezone.utc)"
     );
     assert_eq!(
-        run("from datetime import datetime\ndatetime.now()", host_zone.clone()).unwrap_err(),
-        "NotImplementedError: OS function 'datetime.now' not implemented with standard execution"
+        run_repr_under("datetime.now()", london.clone()),
+        "datetime.datetime(2023, 11, 14, 22, 13, 20, 123456)"
+    );
+    assert_eq!(run_repr_under("date.today()", london), "datetime.date(2023, 11, 14)");
+}
+
+/// `astimezone()`, the `time` constants and `%Z` all read the sandbox zone: UTC
+/// unless configured, with the configured name.
+#[test]
+fn astimezone_and_the_time_constants_read_the_sandbox_zone() {
+    let utc = AutoOsCalls::default();
+    assert_eq!(
+        run_repr_under("datetime(2024, 6, 15, 12, 30).astimezone()", utc.clone()),
+        "datetime.datetime(2024, 6, 15, 12, 30, tzinfo=datetime.timezone(datetime.timedelta(0), 'UTC'))"
     );
     assert_eq!(
-        run("from datetime import date\ndate.today()", host_zone).unwrap_err(),
-        "NotImplementedError: OS function 'date.today' not implemented with standard execution"
+        run_repr_under("(time.timezone, time.altzone, time.daylight, time.tzname)", utc),
+        "(0, 0, 0, ('UTC', 'UTC'))"
     );
+
+    let eet = AutoOsCalls {
+        datetime: FIXED,
+        timezone: SandboxTimeZone::Fixed {
+            offset_seconds: 7_200,
+            name: Some("EET".to_owned()),
+        },
+        ..AutoOsCalls::default()
+    };
+    assert_eq!(
+        run_repr_under("datetime(2024, 6, 15, 12, 30).astimezone()", eet.clone()),
+        "datetime.datetime(2024, 6, 15, 12, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=7200), 'EET'))"
+    );
+    assert_eq!(
+        run_repr_under(
+            "datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc).astimezone()",
+            eet.clone()
+        ),
+        "datetime.datetime(2024, 6, 15, 14, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=7200), 'EET'))"
+    );
+    // a naive value is read in the sandbox zone, then converted to the explicit one
+    assert_eq!(
+        run_repr_under("datetime(2024, 6, 15, 12, 30).astimezone(timezone.utc)", eet.clone()),
+        "datetime.datetime(2024, 6, 15, 10, 30, tzinfo=datetime.timezone.utc)"
+    );
+    assert_eq!(
+        run_repr_under(
+            "datetime.now().astimezone().strftime('%Y-%m-%d %H:%M %Z %z')",
+            eet.clone()
+        ),
+        "'2023-11-15 00:13 EET +0200'"
+    );
+    assert_eq!(
+        run_repr_under("(time.timezone, time.altzone, time.daylight, time.tzname)", eet),
+        "(-7200, -7200, 0, ('EET', 'EET'))"
+    );
+}
+
+/// A named zone carries its DST rules: the offset and abbreviation follow the
+/// instant, a naive value is read at its first occurrence (CPython's `fold=0`),
+/// and the `time` constants come from January and July of the clock's year.
+/// Expectations were checked against CPython under `TZ=Europe/London` and
+/// `TZ=Australia/Sydney`.
+#[test]
+fn a_named_zone_applies_its_dst_rules() {
+    let london = AutoOsCalls {
+        datetime: FIXED,
+        timezone: SandboxTimeZone::named("Europe/London").unwrap(),
+        ..AutoOsCalls::default()
+    };
+    assert_eq!(
+        run_repr_under(
+            "datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc).astimezone()",
+            london.clone()
+        ),
+        "datetime.datetime(2024, 6, 15, 13, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600), 'BST'))"
+    );
+    assert_eq!(
+        run_repr_under("datetime(2024, 6, 15, 12, 30).astimezone(timezone.utc)", london.clone()),
+        "datetime.datetime(2024, 6, 15, 11, 30, tzinfo=datetime.timezone.utc)"
+    );
+    // 01:30 happens twice when the clocks go back; the first occurrence is still BST
+    assert_eq!(
+        run_repr_under("datetime(2024, 10, 27, 1, 30).astimezone(timezone.utc)", london.clone()),
+        "datetime.datetime(2024, 10, 27, 0, 30, tzinfo=datetime.timezone.utc)"
+    );
+    // 01:30 never happens when the clocks go forward; the offset from before the gap applies
+    assert_eq!(
+        run_repr_under("datetime(2024, 3, 31, 1, 30).astimezone(timezone.utc)", london.clone()),
+        "datetime.datetime(2024, 3, 31, 1, 30, tzinfo=datetime.timezone.utc)"
+    );
+    assert_eq!(
+        run_repr_under(
+            "datetime.now().astimezone().strftime('%Y-%m-%d %H:%M %Z %z')",
+            london.clone()
+        ),
+        "'2023-11-14 22:13 GMT +0000'"
+    );
+    assert_eq!(
+        run_repr_under("(time.timezone, time.altzone, time.daylight, time.tzname)", london),
+        "(0, -3600, 1, ('GMT', 'BST'))"
+    );
+    // south of the equator January is the daylight half, so the halves swap
+    let sydney = AutoOsCalls {
+        datetime: FIXED,
+        timezone: SandboxTimeZone::named("Australia/Sydney").unwrap(),
+        ..AutoOsCalls::default()
+    };
+    assert_eq!(
+        run_repr_under("(time.timezone, time.altzone, time.daylight, time.tzname)", sydney),
+        "(-36000, -39600, 1, ('AEST', 'AEDT'))"
+    );
+    // the constants need the clock's year, which a CallHost clock cannot give at import
+    let no_clock = AutoOsCalls {
+        datetime: DateTimeSource::CallHost,
+        timezone: SandboxTimeZone::named("Europe/London").unwrap(),
+        ..AutoOsCalls::default()
+    };
+    assert_eq!(
+        run("import time\ntime.tzname", no_clock).unwrap_err(),
+        "AttributeError: 'module' object has no attribute 'tzname'"
+    );
+    assert_eq!(
+        run_repr_under("(time.timezone, time.tzname)", call_host()),
+        "(0, ('UTC', 'UTC'))"
+    );
+}
+
+/// A named zone covers `datetime`'s whole range, where the instants sit outside
+/// what jiff's own timestamps hold: before the epoch, where its sub-second
+/// component is negative, and on the last day, past its maximum timestamp.
+/// Expectations were checked against CPython under `TZ=Europe/London`.
+#[test]
+fn a_named_zone_spans_the_full_datetime_range() {
+    let london = AutoOsCalls {
+        datetime: FIXED,
+        timezone: SandboxTimeZone::named("Europe/London").unwrap(),
+        ..AutoOsCalls::default()
+    };
+    assert_eq!(
+        run_repr_under(
+            "datetime(1960, 6, 15, 12, 30, 0, 123456).astimezone(timezone.utc)",
+            london.clone()
+        ),
+        "datetime.datetime(1960, 6, 15, 11, 30, 0, 123456, tzinfo=datetime.timezone.utc)"
+    );
+    assert_eq!(
+        run_repr_under(
+            "datetime(1960, 1, 15, 12, 30, 0, 123456).astimezone(timezone.utc)",
+            london.clone()
+        ),
+        "datetime.datetime(1960, 1, 15, 12, 30, 0, 123456, tzinfo=datetime.timezone.utc)"
+    );
+    // December is GMT; jiff's last timestamp is a day earlier, but no zone changes then
+    assert_eq!(
+        run_repr_under(
+            "datetime(9999, 12, 31, 12, 0, tzinfo=timezone.utc).astimezone()",
+            london.clone()
+        ),
+        "datetime.datetime(9999, 12, 31, 12, 0, tzinfo=datetime.timezone(datetime.timedelta(0), 'GMT'))"
+    );
+    assert_eq!(
+        run_repr_under(
+            "datetime(9999, 12, 31, 12, 0, tzinfo=timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M %Z %z')",
+            london
+        ),
+        "'9999-12-31 12:00 GMT +0000'"
+    );
+}
+
+/// CPython renders the days either side of a naive value to find its local
+/// offset, so `astimezone()` refuses the first and last representable days in
+/// every zone; an aware value on those days converts. Expectations were checked
+/// against CPython under `TZ=UTC` and `TZ=Europe/London`.
+#[test]
+fn naive_astimezone_refuses_the_first_and_last_day() {
+    for zone in [SandboxTimeZone::utc(), SandboxTimeZone::named("Europe/London").unwrap()] {
+        let calls = AutoOsCalls {
+            datetime: FIXED,
+            timezone: zone,
+            ..AutoOsCalls::default()
+        };
+        let refused = |expr: &str| {
+            let code = format!("from datetime import datetime, timezone\n{expr}");
+            run(&code, calls.clone()).unwrap_err()
+        };
+        assert_eq!(
+            refused("datetime(9999, 12, 31, 12, 0).astimezone(timezone.utc)"),
+            "ValueError: year must be in 1..9999, not 10000"
+        );
+        assert_eq!(
+            refused("datetime(1, 1, 1, 12, 0).astimezone(timezone.utc)"),
+            "ValueError: year must be in 1..9999, not 0"
+        );
+        // the day either side is fine, and an aware value never probes
+        assert_eq!(
+            run_repr_under("datetime(9999, 12, 30, 12, 0).astimezone(timezone.utc)", calls.clone()),
+            "datetime.datetime(9999, 12, 30, 12, 0, tzinfo=datetime.timezone.utc)"
+        );
+        assert_eq!(
+            run_repr_under(
+                "datetime(9999, 12, 31, 12, 0, tzinfo=timezone.utc).astimezone(timezone.utc)",
+                calls
+            ),
+            "datetime.datetime(9999, 12, 31, 12, 0, tzinfo=datetime.timezone.utc)"
+        );
+    }
+}
+
+/// A naive `timestamp()` reads the session zone, and reproduces the range error
+/// CPython's own solve raises: always on the first representable day, and on the
+/// last only where the zone shifts past the end of the range. Expectations were
+/// checked against CPython under `TZ=Europe/London` and `TZ=Asia/Kathmandu`.
+#[test]
+fn naive_timestamp_reads_the_session_zone() {
+    let under = |zone: SandboxTimeZone| AutoOsCalls {
+        datetime: FIXED,
+        timezone: zone,
+        ..AutoOsCalls::default()
+    };
+    let london = under(SandboxTimeZone::named("Europe/London").unwrap());
+    // BST, so an hour earlier in UTC than the same wall clock read as UTC
+    assert_eq!(
+        run_repr_under("datetime(2024, 6, 15, 12, 30).timestamp()", london.clone()),
+        "1718451000.0"
+    );
+    assert_eq!(
+        run_repr_under("datetime(2024, 1, 15, 12, 30).timestamp()", london.clone()),
+        "1705321800.0"
+    );
+    // an aware value carries its own offset and never consults the zone
+    assert_eq!(
+        run_repr_under(
+            "datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc).timestamp()",
+            london.clone()
+        ),
+        "1718454600.0"
+    );
+    let refused = |expr: &str, calls: AutoOsCalls| {
+        let code = format!("from datetime import datetime, timezone\n{expr}");
+        run(&code, calls).unwrap_err()
+    };
+    assert_eq!(
+        refused("datetime(1, 1, 1, 12, 0).timestamp()", london.clone()),
+        "ValueError: year must be in 1..9999, not 0"
+    );
+    // GMT in December, so the last day still lands inside the range
+    assert_eq!(
+        run_repr_under("datetime(9999, 12, 31, 23, 0).timestamp()", london),
+        "253402297200.0"
+    );
+    // +05:45 pushes 9999-12-31 19:00 into year 10000, but 18:00 stays inside
+    let kathmandu = under(SandboxTimeZone::named("Asia/Kathmandu").unwrap());
+    assert_eq!(
+        refused("datetime(9999, 12, 31, 19, 0).timestamp()", kathmandu.clone()),
+        "ValueError: year must be in 1..9999, not 10000"
+    );
+    assert_eq!(
+        run_repr_under("datetime(9999, 12, 31, 18, 0).timestamp()", kathmandu),
+        "253402258500.0"
+    );
+}
+
+/// Zone names are validated before the database sees them, and the database
+/// answers for `UTC` and every IANA key.
+#[test]
+fn zone_names_are_resolved_or_refused() {
+    assert_eq!(
+        SandboxTimeZone::named("UTC").unwrap().iana_name(),
+        Some("UTC"),
+        "UTC is in every database"
+    );
+    assert_eq!(
+        SandboxTimeZone::named("Europe/London").unwrap().iana_name(),
+        Some("Europe/London")
+    );
+    for name in [
+        "",
+        "Mars/Olympus",
+        ".",
+        "../zoneinfo/UTC",
+        "Europe/../UTC",
+        "Europe//London",
+        "Europe/London\0",
+        // jiff's nameless placeholder zone, which nothing could re-resolve by name
+        "Etc/Unknown",
+    ] {
+        assert_eq!(
+            SandboxTimeZone::named(name).unwrap_err().to_string(),
+            format!("unknown timezone '{name}'")
+        );
+    }
+    assert_eq!(SandboxTimeZone::utc().iana_name(), None);
 }
 
 #[test]

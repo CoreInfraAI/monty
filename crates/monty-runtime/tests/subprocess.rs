@@ -618,6 +618,22 @@ repr(datetime.now())",
 time.time()",
     );
     assert_eq!(expect_complete(event), MontyObject::float(1_700_000_000.123_456));
+    // the zone is also what `astimezone()`, `%Z` and the `time` constants report
+    let (_, event) = child.feed(
+        "import time
+(datetime.now().astimezone().strftime('%H:%M %Z'), time.timezone, time.tzname)",
+    );
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::tuple([
+            MontyObject::string("00:13 UTC+02:00".to_owned()),
+            MontyObject::int(-7_200),
+            MontyObject::tuple([
+                MontyObject::string("UTC+02:00".to_owned()),
+                MontyObject::string("UTC+02:00".to_owned()),
+            ]),
+        ])
+    );
     // CPython: random.seed(42); random.random()
     let (_, event) = child.feed(
         "import random
@@ -1101,6 +1117,13 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `math.lcm` of two large coprime ints is a product, preflighted like `*`.
         ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_297_439),
         ("('a' * 1000).replace('a', 'b' * 2000)", 2_045_422),
+        // Every `%Z` copies the zone name into a `StringBuilder`, refused at a
+        // capacity doubling like the formatter cases above: fixed-size pushes
+        // make that step deterministic.
+        (
+            "from datetime import datetime, timezone, timedelta\ntz = timezone(timedelta(0), 'n' * 100_000)\ndatetime(2024, 1, 1, tzinfo=tz).strftime('%Z' * 5_000)",
+            1_254_024,
+        ),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.
         ("x = [None] * 40_000\nx += x", 1_962_551),

@@ -1,13 +1,16 @@
 //! Implementation of the `time` module.
 //!
-//! `time()` and `sleep()` follow the session's `AutoOsCalls` policies.
-//! Monotonic clocks and the `struct_time` family raise `AttributeError`.
+//! `time()` and `sleep()` follow the session's `AutoOsCalls` policies, and the
+//! zone constants (`timezone`, `altzone`, `daylight`, `tzname`) describe its
+//! zone. Monotonic clocks and the `struct_time` family raise `AttributeError`.
 //! See `limitations/time.md` for CPython divergences.
 
 use std::time::Duration;
 
-use monty_types::{OsFunctionCall, SleepError, SleepMode, sleep_duration, unix_seconds};
+use chrono::Datelike;
+use monty_types::{MontyTimeZone, OsFunctionCall, SleepError, SleepMode, sleep_duration, unix_seconds};
 use num_traits::ToPrimitive;
+use smallvec::smallvec;
 
 use crate::{
     args::ArgValues,
@@ -17,7 +20,10 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
-    types::{Module, PyTrait, datetime::sandbox_instant},
+    types::{
+        Module, PyTrait, datetime::sandbox_instant, str::allocate_string, timezone::tzname_string,
+        tuple::allocate_tuple,
+    },
     value::Value,
 };
 
@@ -43,8 +49,33 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::ModuleFunction(ModuleFunctions::Time(TimeFunctions::Sleep)),
         vm,
     );
+    set_zone_constants(&mut module, vm);
 
     vm.heap.allocate(HeapData::Module(Box::new(module)))
+}
+
+/// Sets `timezone`, `altzone`, `daylight` and `tzname` from the sandbox zone,
+/// the values CPython reads from libc for 1 January and 1 July of the current
+/// year. A named zone needs that year from the session clock, so the four are
+/// unset when the clock is `CallHost`: module creation cannot suspend.
+fn set_zone_constants(module: &mut Module, vm: &mut VM<'_>) {
+    let year = vm.env.auto_os_calls.datetime.read().map(|utc| utc.year());
+    let Some(constants) = vm.env.auto_os_calls.timezone.constants(year) else {
+        return;
+    };
+    // `time.timezone` is seconds *west* of UTC, the opposite sign to `utcoffset()`.
+    let west = |zone: &MontyTimeZone| Value::Int(-i64::from(zone.offset_seconds));
+    let name = |zone: &MontyTimeZone, vm: &VM<'_>| {
+        allocate_string(tzname_string(zone.offset_seconds, zone.name.as_deref()), vm.heap)
+    };
+    module.set_attr(StaticStrings::Timezone, west(&constants.standard), vm);
+    module.set_attr(StaticStrings::Altzone, west(&constants.daylight_zone), vm);
+    module.set_attr(StaticStrings::Daylight, Value::Int(i64::from(constants.daylight)), vm);
+    let tzname = allocate_tuple(
+        smallvec![name(&constants.standard, vm), name(&constants.daylight_zone, vm)],
+        vm.heap,
+    );
+    module.set_attr(StaticStrings::Tzname, tzname, vm);
 }
 
 /// Dispatches a call to a `time` module function.

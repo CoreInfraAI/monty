@@ -56,14 +56,15 @@ fn fstring_unknown_directive_passes_through_verbatim() {
     );
 }
 
-/// A directive that *parses* but can't be rendered for the value (a time
-/// directive on a bare `date`, which Monty stores without a time component)
-/// raises `ValueError` — and, critically, must NOT panic the host:
-/// `chrono`'s `DelayedFormat::to_string()` panics here, which would be a
-/// sandbox escape on untrusted input.
+/// A directive chrono *parses* but can't render for the value (`%+`, its RFC
+/// 3339 form, needs an offset the naive components lack) raises `ValueError`
+/// where CPython passes `%+` to the C library (glibc echoes it); see
+/// `limitations/datetime.md`. Critically, it must NOT panic the host: `chrono`'s
+/// `DelayedFormat::to_string()` panics here, which would be a sandbox escape
+/// on untrusted input.
 #[test]
 fn unrenderable_directive_raises_not_panics() {
-    let msg = run_err("from datetime import date\ndate(2024, 6, 15).strftime('%z')");
+    let msg = run_err("from datetime import date\ndate(2024, 6, 15).strftime('%+')");
     assert!(
         msg.contains("ValueError") && msg.contains("Invalid format string"),
         "expected ValueError: Invalid format string, got: {msg}"
@@ -109,6 +110,24 @@ fn strptime_gaps_on_date_and_datetime() {
         datetime.strptime('12:30', '%H:%M')
         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ValueError: time data '12:30' does not match format '%H:%M'
+    "#
+    );
+}
+
+/// A `%z` offset carrying a colon before its seconds only. Both interpreters
+/// refuse it, but CPython's own check never runs — it goes on to `int(':0')`
+/// and lets that error out — so the wording cannot be shared with a fixture in
+/// `test_cases/`. See limitations/datetime.md.
+#[test]
+fn strptime_rejects_a_colon_before_the_seconds_only() {
+    assert_snapshot!(
+        run_err("from datetime import datetime\ndatetime.strptime('2024-06-15 +0102:03', '%Y-%m-%d %z')"),
+        @r#"
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        datetime.strptime('2024-06-15 +0102:03', '%Y-%m-%d %z')
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ValueError: Inconsistent use of : in +0102:03
     "#
     );
 }

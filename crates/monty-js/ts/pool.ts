@@ -105,7 +105,7 @@ export interface CheckoutOptions {
   printFlushInterval?: number
   /**
    * Session clock, sleep and random initialization policies; see `AutoOsCalls`.
-   * Defaults to the worker's clock, local zone and entropy, with pool-managed sleeps capped at ten seconds.
+   * Defaults to the worker's clock in UTC and its entropy, with pool-managed sleeps capped at ten seconds.
    * Sleeps count toward suspensions and `maxTotalSleepSecs`, but not execution duration limits.
    */
   autoOsCalls?: AutoOsCalls
@@ -243,8 +243,11 @@ function nativeAutoOsCalls(calls: EncodedAutoOsCalls): Record<string, unknown> {
     fields.datetimeUnixSeconds = calls.datetime.unixSeconds
     fields.datetimeMicrosecond = calls.datetime.microsecond
   }
-  if (typeof calls.timezone === 'string') {
-    fields.timezoneKind = calls.timezone
+  if (calls.timezone === 'utc') {
+    fields.timezoneKind = 'utc'
+  } else if (typeof calls.timezone === 'string') {
+    fields.timezoneKind = 'named'
+    fields.timezoneName = calls.timezone
   } else if (calls.timezone !== undefined) {
     fields.timezoneKind = 'fixed'
     fields.timezoneOffsetSeconds = calls.timezone.offsetSeconds

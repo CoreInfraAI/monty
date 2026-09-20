@@ -19,6 +19,18 @@ assert isinstance(start, float)
 assert 1_600_000_000.0 < start < 32_000_000_000.0
 assert time.time() >= start
 
+# === zone constants ===
+# only the shape here: the values are asserted in datetime__zone_default.py, which
+# skips CPython on Windows because the harness cannot set its zone there
+assert type(time.timezone) is int
+assert type(time.altzone) is int
+assert time.daylight in (0, 1)
+assert -86400 < time.timezone < 86400
+assert -86400 < time.altzone < 86400
+assert type(time.tzname) is tuple
+assert len(time.tzname) == 2
+assert all(type(name) is str for name in time.tzname)
+
 # === time.sleep() ===
 assert time.sleep(0) is None
 assert time.sleep(0.001) is None

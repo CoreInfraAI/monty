@@ -385,6 +385,8 @@ export class WorkerTransport {
   private async control(request: ComponentRequest, kind: ComponentEvent['tag'], what: string): Promise<ComponentEvent> {
     const event = await this.run(request, undefined)
     if (!event) throw new Error(`${what} produced no turn-ending event (worker crashed)`)
+    // the worker's own reason, e.g. a zone name its tz database lacks
+    if (event.tag === 'error' && kind !== 'error') throw new Error(`${what} failed: ${event.val.message}`)
     if (event.tag !== kind) throw new Error(`${what} expected event ${kind}, got ${event.tag}`)
     return event
   }
@@ -507,8 +509,8 @@ function componentAutoOsCalls(calls: EncodedAutoOsCalls): ComponentAutoOsCalls |
 }
 
 function componentTimeZone(timezone: NonNullable<EncodedAutoOsCalls['timezone']>): ComponentTimeZone {
-  if (timezone === 'system') return { tag: 'system' }
-  if (timezone === 'call_host') return { tag: 'call-host' }
+  if (timezone === 'utc') return { tag: 'utc' }
+  if (typeof timezone === 'string') return { tag: 'named', val: timezone }
   return { tag: 'fixed', val: { offsetSeconds: timezone.offsetSeconds, name: timezone.name } }
 }
 

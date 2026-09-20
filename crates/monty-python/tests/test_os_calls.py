@@ -824,9 +824,10 @@ Path('/tmp/mydir/file.txt').read_text()
 
 
 def test_datetime_default_reads_worker_clock(monty_run: RunMonty):
-    before = datetime.datetime.now()
+    """The default clock is the worker's, read in UTC rather than the host's zone."""
+    before = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     result = monty_run('from datetime import datetime\ndatetime.now()')
-    after = datetime.datetime.now()
+    after = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     assert before - datetime.timedelta(seconds=60) <= result <= after + datetime.timedelta(seconds=60)
 
 
@@ -1100,57 +1101,112 @@ def test_timezone_fixed_offset_and_name(monty_run: RunMonty):
     )
 
 
-def test_timezone_system_with_a_fixed_instant(monty_run: RunMonty):
+def test_timezone_defaults_to_utc(monty_run: RunMonty):
+    """The default zone is UTC, not the host's, so `astimezone()` and the `time` constants are host-independent."""
     frozen = datetime.datetime(2024, 7, 1, 12, 0, tzinfo=datetime.timezone.utc)
-    code = 'from datetime import datetime, timezone\n(datetime.now() - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()'
-    result = monty_run(code, checkout={'auto_os_calls': {'datetime': frozen, 'timezone': 'system'}})
-    host_offset = frozen.astimezone().utcoffset()
-    assert host_offset is not None
-    assert result == host_offset.total_seconds()
-
-
-def test_timezone_call_host_sends_only_the_naive_calls(monty_run: RunMonty):
-    """Only the calls that need the zone reach the handler; `time.time()` and `now(tz)` are answered in the worker."""
-    calls: list[str] = []
-
-    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
-        calls.append(name)
-        return datetime.date(2001, 2, 3) if name == 'date.today' else datetime.datetime(2001, 2, 3, 4, 5)
-
-    frozen = datetime.datetime(2024, 1, 15, 10, 30, 5)
     code = (
-        'import time\nfrom datetime import date, datetime, timezone\n'
-        '(date.today(), datetime.now(), time.time(), datetime.now(timezone.utc))'
+        'import time\nfrom datetime import datetime\n'
+        '(datetime.now(), datetime.now().astimezone(), datetime(2024, 1, 1, 12, 30).astimezone().strftime("%H:%M %Z"), '
+        'time.timezone, time.altzone, time.daylight, time.tzname)'
     )
-    result = monty_run(code, os=os_handler, checkout={'auto_os_calls': {'datetime': frozen, 'timezone': 'call_host'}})
+    for zone in ['utc', None]:
+        auto_os_calls: dict[str, Any] = {'datetime': frozen}
+        if zone is not None:
+            auto_os_calls['timezone'] = zone
+        result = monty_run(code, checkout={'auto_os_calls': auto_os_calls})
+        assert result == snapshot(
+            (
+                datetime.datetime(2024, 7, 1, 12, 0),
+                datetime.datetime(2024, 7, 1, 12, 0, tzinfo=datetime.timezone(datetime.timedelta(0), 'UTC')),
+                '12:30 UTC',
+                0,
+                0,
+                0,
+                ('UTC', 'UTC'),
+            )
+        )
+
+
+def test_timezone_fixed_zone_is_reported(monty_run: RunMonty):
+    """A fixed zone's offset and name reach `astimezone()`, `%Z` and the `time` constants."""
+    code = (
+        'import time\nfrom datetime import datetime, timezone\n'
+        '(datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc).astimezone(), '
+        'datetime(2024, 6, 15, 12, 30).astimezone(timezone.utc), '
+        'datetime(2024, 6, 15, 12, 30).astimezone().strftime("%z %Z"), '
+        'time.timezone, time.tzname)'
+    )
+    zone = {'offset_seconds': 7200, 'name': 'EET'}
+    result = monty_run(code, checkout={'auto_os_calls': {'timezone': zone}})
     assert result == snapshot(
         (
-            datetime.date(2001, 2, 3),
-            datetime.datetime(2001, 2, 3, 4, 5),
-            1705314605.0,
-            datetime.datetime(2024, 1, 15, 10, 30, 5, tzinfo=datetime.timezone.utc),
+            datetime.datetime(2024, 6, 15, 14, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=7200), 'EET')),
+            datetime.datetime(2024, 6, 15, 10, 30, tzinfo=datetime.timezone.utc),
+            '+0200 EET',
+            -7200,
+            ('EET', 'EET'),
         )
     )
-    assert calls == snapshot(['date.today', 'datetime.now'])
+
+
+def test_timezone_named_zone_applies_dst_rules(monty_run: RunMonty):
+    """An IANA name resolves in the worker: the offset and abbreviation follow the instant, the constants the year."""
+    frozen = datetime.datetime(2024, 1, 15, 10, 30, 5, tzinfo=datetime.timezone.utc)
+    code = (
+        'import time\nfrom datetime import datetime, timezone\n'
+        '(datetime.now(), datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc).astimezone(), '
+        'datetime(2024, 10, 27, 1, 30).astimezone(timezone.utc), '
+        'datetime(2024, 6, 15, 12, 30).astimezone().strftime("%H:%M %Z %z"), '
+        'time.timezone, time.altzone, time.daylight, time.tzname)'
+    )
+    result = monty_run(code, checkout={'auto_os_calls': {'datetime': frozen, 'timezone': 'Europe/London'}})
+    assert result == snapshot(
+        (
+            datetime.datetime(2024, 1, 15, 10, 30, 5),
+            datetime.datetime(2024, 6, 15, 13, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600), 'BST')),
+            datetime.datetime(2024, 10, 27, 0, 30, tzinfo=datetime.timezone.utc),
+            '12:30 BST +0100',
+            0,
+            -3600,
+            1,
+            ('GMT', 'BST'),
+        )
+    )
+
+
+def test_timezone_named_zone_constants_need_the_clock(monty_run: RunMonty):
+    """The `time` constants come from the clock's year, which a `call_host` clock cannot give at import."""
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(
+            'import time\ntime.tzname',
+            checkout={'auto_os_calls': {'datetime': 'call_host', 'timezone': 'Europe/London'}},
+        )
+    assert str(exc_info.value) == snapshot("AttributeError: 'module' object has no attribute 'tzname'")
+
+
+def test_timezone_unknown_name_is_refused_at_checkout(monty_run: RunMonty):
+    with pytest.raises(ValueError) as exc_info:
+        monty_run('1', checkout={'auto_os_calls': {'timezone': 'Mars/Olympus'}})
+    assert str(exc_info.value) == snapshot("unknown timezone 'Mars/Olympus'")
 
 
 @pytest.mark.parametrize(
     ('value', 'error', 'message'),
     [
-        (
-            'mars',
-            ValueError,
-            "timezone must be 'system', 'call_host' or {'offset_seconds': int, 'name': str}, got 'mars'",
-        ),
+        ('mars', ValueError, "unknown timezone 'mars'"),
         (
             {'name': 'CET'},
             ValueError,
-            "timezone must be 'system', 'call_host' or {'offset_seconds': int, 'name': str}, got {'name': 'CET'}",
+            "timezone must be 'utc', an IANA zone name or {'offset_seconds': int, 'name': str}, got {'name': 'CET'}",
         ),
         ({'offset_seconds': True}, TypeError, 'timezone offset_seconds must be an int'),
         ({'offset_seconds': 86_400}, ValueError, 'timezone offset_seconds must be within -86399..=86399, got 86400'),
         ({'offset_seconds': 0, 'name': 1}, TypeError, 'timezone name must be a str'),
-        (3600, TypeError, "timezone must be 'system', 'call_host' or {'offset_seconds': int, 'name': str}, not int"),
+        (
+            3600,
+            TypeError,
+            "timezone must be 'utc', an IANA zone name or {'offset_seconds': int, 'name': str}, not int",
+        ),
     ],
 )
 def test_timezone_invalid(pool: Monty, value: Any, error: type[Exception], message: str):

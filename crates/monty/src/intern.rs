@@ -558,6 +558,8 @@ pub enum StaticStrings {
     Altchars,
     /// `os.altsep` constant name.
     Altsep,
+    /// `time.altzone` constant.
+    Altzone,
     /// `typing.Annotated` marker.
     #[strum(serialize = "Annotated")]
     Annotated,
@@ -587,6 +589,8 @@ pub enum StaticStrings {
     Asin,
     /// `math.asinh()` function.
     Asinh,
+    /// `datetime.astimezone()` method.
+    Astimezone,
     /// Module name for `import asyncio`.
     Asyncio,
     /// `math.atan()` function.
@@ -786,6 +790,8 @@ pub enum StaticStrings {
     Datetime,
     /// `date` / `datetime` `day` attribute and constructor kwarg.
     Day,
+    /// `time.daylight` constant.
+    Daylight,
     /// `timedelta.days` attribute and constructor kwarg.
     Days,
     /// `sys.flags.debug` field.

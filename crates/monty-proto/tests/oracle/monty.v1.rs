@@ -469,8 +469,8 @@ pub struct ResourceLimits {
 /// Each unset arm means that field's default.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AutoOsCalls {
-    /// The local zone naive `datetime.now()` and `date.today()` read in.
-    /// Absent (or with no arm set) = the child's local zone.
+    /// The zone naive `datetime.now()` and `date.today()` read in, and that
+    /// `astimezone()`, `%Z` and the `time` constants report. Absent = UTC.
     #[prost(message, optional, tag = "4")]
     pub timezone: ::core::option::Option<SandboxTimeZone>,
     /// What `time.sleep()` and `asyncio.sleep()` do.
@@ -523,12 +523,12 @@ pub struct SandboxTimeZone {
 pub mod sandbox_time_zone {
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Zone {
-        /// The child's local zone.
+        /// UTC, the default.
         #[prost(message, tag = "1")]
-        System(super::Unit),
-        /// Suspend the calls that need the zone to the parent.
-        #[prost(message, tag = "2")]
-        CallHost(super::Unit),
+        Utc(super::Unit),
+        /// An IANA zone name (`Europe/London`), resolved from the child's tz database.
+        #[prost(string, tag = "2")]
+        Named(::prost::alloc::string::String),
         /// A fixed offset from UTC, with a name if it has one.
         #[prost(message, tag = "3")]
         Fixed(super::TimeZone),
@@ -747,7 +747,7 @@ pub struct Configure {
     /// the field trades streaming latency for event volume and nothing else.
     #[prost(uint32, optional, tag = "10")]
     pub print_flush_interval_ms: ::core::option::Option<u32>,
-    /// Absent = `AutoOsCalls::default()`: the child's clock, local zone and entropy,
+    /// Absent = `AutoOsCalls::default()`: the child's clock in UTC and its entropy,
     /// with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
     #[prost(message, optional, tag = "11")]
     pub auto_os_calls: ::core::option::Option<AutoOsCalls>,
