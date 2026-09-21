@@ -14,7 +14,7 @@ use std::{mem, sync::Arc};
 use ahash::AHashMap;
 use monty_types::{
     CallArgs, ExcType, MontyException, MontyObject, MontyUuid, NamedValues, OsFunctionCall, OsPolicy, PrintWriter,
-    ResourceTracker,
+    ResourceTracker, SOURCE_SCAN_THRESHOLD,
     unstable::{self, MontyGraph, NodeId},
 };
 use ruff_python_ast::token::TokenKind;
@@ -29,11 +29,13 @@ use crate::{
     intern::Interns,
     name_map::NameMap,
     object_bridge::{MontyGraphExt, MontyObjectExt},
+    parse::source_nesting_exception,
     run::{CompileOptions, DEFAULT_CWD, Executor, Program, ReplSession, SessionTables},
     run_progress::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
         resume_lookup, resume_with_result,
     },
+    source_nesting::source_within_nesting_bound,
     types::{SessionRandom, tuple::allocate_tuple},
     value::Value,
     virtual_path::canonical_cwd,
@@ -125,6 +127,27 @@ impl MontyRepl {
         }
     }
 
+    /// The [`CompileOptions`] every snippet fed to this session compiles with.
+    #[must_use]
+    pub fn options(&self) -> CompileOptions {
+        self.options
+    }
+
+    /// Rejects a snippet whose nesting would let the parser grow its stack past
+    /// the limit, with the `SyntaxError` compiling it would raise.
+    ///
+    /// For hosts that want the verdict before doing other work on the snippet
+    /// (the worker type-checks after it); the returned [`CheckedSource`] lets
+    /// [`feed_start_checked`](Self::feed_start_checked) skip the scan. Plain
+    /// feeds scan for themselves (see `limitations/language.md`).
+    ///
+    /// # Errors
+    /// The `SyntaxError: Source is too deeply nested` located in the snippet.
+    pub fn check_source<'a>(&self, code: &'a str) -> Result<CheckedSource<'a>, MontyException> {
+        source_nesting_exception(code, &self.script_name, self.options.source_scan_threshold)?;
+        Ok(CheckedSource(code))
+    }
+
     /// Replaces the default clock, sleep and random initialization policies
     /// on every path, including [`feed_start`](Self::feed_start). See
     /// [`MontyRun::with_os_policy`](crate::MontyRun::with_os_policy).
@@ -184,6 +207,9 @@ impl MontyRepl {
     /// returned inside [`ReplStartError`] so the caller can continue feeding
     /// subsequent snippets against the same heap and namespace state.
     ///
+    /// The snippet is scanned for nesting first; [`feed_start_checked`](Self::feed_start_checked)
+    /// takes one [`check_source`](Self::check_source) already vetted.
+    ///
     /// # Errors
     /// Returns a boxed [`ReplStartError`] for syntax, compile-time, or runtime
     /// failures — the REPL session is always preserved inside the error.
@@ -193,6 +219,24 @@ impl MontyRepl {
         inputs: impl Into<NamedValues>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
+        match self.check_source(code) {
+            Ok(checked_code) => self.feed_start_checked(checked_code, inputs, print),
+            Err(error) => Err(Box::new(ReplStartError { repl: self, error })),
+        }
+    }
+
+    /// [`feed_start`](Self::feed_start) for a snippet [`check_source`](Self::check_source)
+    /// already vetted, so the scan is not repeated.
+    ///
+    /// # Errors
+    /// As [`feed_start`](Self::feed_start).
+    pub fn feed_start_checked(
+        self,
+        code: CheckedSource<'_>,
+        inputs: impl Into<NamedValues>,
+        print: PrintWriter<'_>,
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
+        let code = code.0;
         let mut this = self;
         if code.is_empty() {
             return Ok(ReplProgress::Complete {
@@ -278,6 +322,8 @@ impl MontyRepl {
     /// partially mutating globals, those mutations remain visible in later feeds,
     /// matching Python REPL semantics.
     ///
+    /// The snippet is scanned for nesting first.
+    ///
     /// # Errors
     /// Returns [`MontyException`] for syntax/compile/runtime failures.
     pub fn feed_run(
@@ -289,6 +335,7 @@ impl MontyRepl {
         if code.is_empty() {
             return Ok(MontyObject::none());
         }
+        source_nesting_exception(code, &self.script_name, self.options.source_scan_threshold)?;
 
         let (input_values, names) = unstable::into_named_values_parts(inputs.into());
         let (input_names, input_ids): (Vec<_>, Vec<_>) = names.into_iter().unzip();
@@ -550,6 +597,14 @@ impl MontyRepl {
         format!("<python-input-{input_id}>")
     }
 }
+
+/// A snippet [`MontyRepl::check_source`] found within the nesting bound,
+/// which [`MontyRepl::feed_start_checked`] therefore need not scan again.
+///
+/// The verdict used the checking REPL's `source_scan_threshold`, so feed it
+/// to that REPL (or one configured alike), as the worker does.
+#[derive(Debug, Clone, Copy)]
+pub struct CheckedSource<'a>(&'a str);
 
 impl Drop for MontyRepl {
     fn drop(&mut self) {
@@ -1068,6 +1123,10 @@ pub enum ReplContinuationMode {
 ///   syntax error that should be shown immediately).
 #[must_use]
 pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
+    // Complete because feeding it raises the SyntaxError; parsing it here would grow the stack unguarded.
+    if !source_within_nesting_bound(source, SOURCE_SCAN_THRESHOLD) {
+        return ReplContinuationMode::Complete;
+    }
     let Err(error) = parse_module(source) else {
         return ReplContinuationMode::Complete;
     };

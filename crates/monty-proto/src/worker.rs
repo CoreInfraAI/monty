@@ -22,12 +22,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump};
+use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump, source_within_nesting_bound};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
-    OsPolicy, PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, TypeCheckState,
-    TypeCheckingConfig,
+    OsPolicy, PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, SOURCE_SCAN_THRESHOLD,
+    TypeCheckState, TypeCheckingConfig,
 };
 
 use super::{
@@ -455,6 +455,12 @@ impl Child {
                 Some(Ok(os_policy)) => os_policy,
                 Some(Err(err)) => return protocol_violation(&format!("invalid os_policy: {err}")),
             };
+            // ty parses the stubs with every feed, unguarded.
+            if let Some(stubs) = &configure.type_check_stubs
+                && !source_within_nesting_bound(stubs, SOURCE_SCAN_THRESHOLD)
+            {
+                return protocol_violation("invalid type_check_stubs: Source is too deeply nested");
+            }
             self.state = SessionState::Configured(Some(Box::new(configure)));
             ok_event()
         } else {
@@ -510,6 +516,8 @@ impl Child {
                 AssertMessageAnnotations::default,
                 AssertMessageAnnotations::from_max_bytes,
             ),
+            // Not on the wire: every host gets the default.
+            source_scan_threshold: SOURCE_SCAN_THRESHOLD,
         };
         let repl = MontyRepl::new(&self.script_name, ResourceTracker::new(limits), options)
             .with_os_policy(self.os_policy.clone());
@@ -517,16 +525,26 @@ impl Child {
         Ok(())
     }
 
-    /// Runs a `Feed` on the ready session: type-checks the snippet (unless
-    /// skipped), injects inputs, and drives execution to the turn-ending event.
+    /// Runs a `Feed` on the ready session: scans the snippet for nesting,
+    /// type-checks it (unless skipped), injects inputs, and drives execution to
+    /// the turn-ending event.
     fn handle_repl_feed(&mut self, feed: pb::Feed, sink: &mut dyn EventSink) -> pb::ChildEvent {
         if let Err(event) = self.ensure_repl() {
             return *event;
         }
-        if !matches!(self.state, SessionState::Ready(_)) {
+        let SessionState::Ready(repl) = &self.state else {
             // ensure_repl left it un-Ready only when mid-suspension
             return protocol_violation("Feed without a session ready for input");
-        }
+        };
+        // Before anything parses the snippet: neither ty nor the compile scan again.
+        let code = match repl.check_source(&feed.code) {
+            Ok(code) => code,
+            Err(error) => {
+                return event(pb::child_event::Kind::Error(pb::Error {
+                    exception: Some((&error).into()),
+                }));
+            }
+        };
         if !feed.skip_type_check
             && let Some(event) = self.type_check_feed(&feed.code)
         {
@@ -553,7 +571,7 @@ impl Child {
             state.pending_snippet = Some(feed.code.clone());
         }
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
-        let result = repl.feed_start(&feed.code, inputs, PrintWriter::Callback(&mut print));
+        let result = repl.feed_start_checked(code, inputs, PrintWriter::Callback(&mut print));
         let event = self.drive(result);
         print.drain();
         event

@@ -20,7 +20,7 @@ use crate::{
     name_map::NameMap,
     namespace::NamespaceId,
     object_bridge::MontyObjectExt,
-    parse::{CodeRange, parse_with_interner},
+    parse::{CodeRange, parse_with_interner, source_nesting_exception},
     prepare::prepare_with_existing_names,
     run_progress::{
         RunProgress, answer_unserved_lookups, build_run_progress, check_snapshot_from_converted, convert_frame_exit,
@@ -365,6 +365,7 @@ impl Executor {
         options: CompileOptions,
     ) -> Result<Self, MontyException> {
         check_identifier(&input_names)?;
+        source_nesting_exception(&code, script_name, options.source_scan_threshold)?;
         let mut interns = Interns::new(&code);
         let mut globals = NameMap::new();
         let (module_code, _) = compile_module_source(
@@ -846,6 +847,8 @@ pub struct RefCountOutput {
 
 /// Compiles module source through the supplied tables, committing any overlay on success.
 /// On failure the caller restores provisional global slots or discards a fresh program's tables.
+/// The source must already have passed the nesting scan; `MontyRun::new` and
+/// the REPL feeds run it.
 fn compile_module_source(
     code: &str,
     script_name: &str,
