@@ -593,6 +593,19 @@ assert len(members) == 1536
 }
 
 #[test]
+fn dir_tracks_repl_bindings_and_survives_dump() {
+    let (mut repl, _) = init_repl("first = 1\nlisting = dir\ndef tool(): pass");
+    feed_run_print(&mut repl, "assert {'first', 'listing', 'tool'} <= set(listing())").unwrap();
+    let mut restored = round_trip_repl(&repl);
+    feed_run_print(
+        &mut restored,
+        "second = 2\nassert 'second' in listing()\nassert '__doc__' in listing(tool)",
+    )
+    .unwrap();
+    feed_run_print(&mut repl, "assert 'second' not in dir()").unwrap();
+}
+
+#[test]
 fn a_string_feed_keeps_its_result_and_sets_the_module_docstring() {
     let (mut repl, value) = init_repl("'Session documentation'");
     assert_eq!(value, MontyObject::string("Session documentation"));

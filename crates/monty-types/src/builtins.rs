@@ -49,7 +49,7 @@ pub enum BuiltinsFunctions {
     // complex - handled by Type enum
     // Delattr,
     // dict - handled by Type enum
-    // Dir,
+    // Dir - appended below
     Divmod,
     Enumerate,
     Filter,
@@ -119,4 +119,6 @@ pub enum BuiltinsFunctions {
     Exec,
     /// `locals()`, appended after [`Self::Exec`].
     Locals,
+    /// `dir([object])`, appended to preserve existing bytecode operands.
+    Dir,
 }

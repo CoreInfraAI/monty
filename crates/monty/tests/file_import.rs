@@ -194,6 +194,38 @@ fn a_module_runs_once_per_session() {
 }
 
 #[test]
+fn dir_lists_file_module_names_after_mutation_and_restore() {
+    let files = &[(
+        "/proj/tools.py",
+        "__all__ = ['run']\n_private = 1\ndef run():\n    return 42\n",
+    )];
+    let (repl, result) = feed(
+        repl(),
+        r"
+import tools
+assert {'__name__', '__doc__', '__file__', 'run', '_private', '__all__'} <= set(dir(tools))
+assert getattr(tools, 'run')() == 42
+tools.added = 1
+before = dir(tools)
+assert before.count('__doc__') == 1
+assert 'added' in before
+",
+        files,
+    );
+    result.unwrap();
+    let bytes = dump("main.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped idle");
+    };
+    let (_, result) = feed(
+        *restored,
+        "assert dir(tools) == before\ntools.after_restore = 2\nassert 'after_restore' in dir(tools)",
+        files,
+    );
+    result.unwrap();
+}
+
+#[test]
 fn the_cache_survives_an_idle_dump() {
     let files = &[("/proj/foo.py", FOO)];
     let (repl, result) = feed(repl(), "import foo\nfoo.x = 7", files);

@@ -44,6 +44,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
     directory instead, see [modules from files](modules.md#modules-from-files)
 - Starred unpacking everywhere CPython allows it
 - Runtime generic aliases (`list[int]`) and `|` unions (`int | None`), see [typing.md](typing.md)
+- `dir()` for scope names and `dir(obj)` for modules, user functions, classes and instances, with a
+    [partial attribute inventory](builtins.md#dir)
 
 **Rejected at parse time**, with `NotImplementedError` before any code runs:
 

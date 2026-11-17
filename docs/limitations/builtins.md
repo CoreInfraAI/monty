@@ -6,7 +6,7 @@ Python.
 
 ## Implemented builtin functions
 
-`abs`, `all`, `any`, `bin`, `chr`, `divmod`, `enumerate`, `eval`, `exec`, `filter`,
+`abs`, `all`, `any`, `bin`, `chr`, `dir`, `divmod`, `enumerate`, `eval`, `exec`, `filter`,
 `format`, `getattr`, `hasattr`, `hash`, `hex`, `id`, `isinstance`, `iter`, `len`,
 `locals`, `map`, `max`, `min`, `next`, `oct`, `open`, `ord`, `pow`, `print`, `repr`,
 `reversed`, `round`, `setattr`, `sorted`, `sum`, `type`, `zip`.
@@ -23,7 +23,7 @@ Python.
 These raise `NameError`:
 
 - **Code objects and imports**: `compile`, `__import__`.
-- **Namespace introspection**: `globals`, `vars`, `dir`.
+- **Namespace introspection**: `globals`, `vars`.
 - **Interactive**: `input`, `breakpoint`, `help`.
 - **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`,
     `super`. (`@property` on functions is not recognized; use a method.)
@@ -32,6 +32,20 @@ These raise `NameError`:
 
 `super()` is the biggest practical omission: with no class inheritance either
 (see [classes.md](classes.md)), there is no inheritance mechanism at all.
+
+## dir()
+
+- `dir()` uses the same namespace as [`locals()`](eval_exec.md#locals), including its omissions:
+    implicit module dunders such as `__name__` are absent at module scope.
+- Object inventories cover modules, user functions, bound methods, user classes and instances, and host classes and
+    instances.
+    They omit CPython attributes Monty does not expose, including inherited `object` methods.
+    Other runtime objects and builtin types currently return an empty list, including lists, strings, named tuples,
+    and builtin or host functions.
+- Custom `__dir__` methods and module hooks are ignored.
+- Host-backed objects list only attributes already sent by the host or stored in the sandbox, including known class
+    attributes.
+    Lazy host attributes whose names have not been supplied cannot be discovered.
 
 ## Behavioural divergences
 

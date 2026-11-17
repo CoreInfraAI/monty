@@ -372,10 +372,9 @@ every construction request. Divergences:
 - Method decorators — `@classmethod`, `@staticmethod`, `@property`, and any
     decorator on a `def` inside a class body (rejected at parse time). Decorators
     on classes and on non-method functions are supported.
-- **Classes are barely introspectable**: `__dict__`, `__bases__` and `dir()`
-    are all unavailable (`cls.__name__` and `cls.__annotations__` work, see
-    [typing.md](typing.md#annotations)). A class decorator can therefore
-    discover fields and nothing else.
+- `__dict__` and `__bases__` are unavailable.
+    `dir()` has a [partial attribute inventory](builtins.md#dir), and `cls.__annotations__` follows the
+    [annotation limitations](typing.md#annotations).
 - **Tracebacks from decorator application point at the whole `class` statement**
     (a span from the first decorator through the body, with the body elided as
     `...<N lines>...`), where CPython pins the individual decorator that raised.

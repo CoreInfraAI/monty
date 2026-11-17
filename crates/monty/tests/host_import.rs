@@ -126,6 +126,60 @@ assert b.__doc__ is None
 }
 
 #[test]
+fn dir_lists_host_attributes_without_lazy_lookups() {
+    assert_eq!(
+        start("import os\n'environ' in dir(os)").into_complete(),
+        Some(MontyObject::bool(true)),
+    );
+    let code = r"
+import tools
+assert dir(tools) == ['__all__', '__doc__', '_private', 'run']
+assert getattr(tools, 'run') == 42
+";
+    let module = host_module(
+        "tools",
+        1,
+        vec![
+            ("run", MontyObject::int(42)),
+            ("_private", MontyObject::none()),
+            ("__all__", MontyObject::list([MontyObject::string("run")])),
+        ],
+    );
+    assert_eq!(
+        answer_import(start(code), "tools", module).into_complete(),
+        Some(MontyObject::none()),
+    );
+
+    let class = MontyObject::class_type(
+        "Tools",
+        MontyUuid::from_u128(2),
+        true,
+        false,
+        [
+            (MontyObject::string("category"), MontyObject::string("tools")),
+            (MontyObject::string("shadowed_attribute_name"), MontyObject::none()),
+        ],
+    );
+    let instance = MontyObject::class_instance(
+        class,
+        MontyUuid::from_u128(3),
+        [
+            (MontyObject::string("run"), MontyObject::int(42)),
+            (MontyObject::string("shadowed_attribute_name"), MontyObject::int(1)),
+        ],
+    );
+    let code = r"
+import tools
+assert dir(tools) == ['__class__', 'category', 'run', 'shadowed_attribute_name']
+assert dir(type(tools)) == ['category', 'shadowed_attribute_name']
+";
+    assert_eq!(
+        answer_import(start(code), "tools", instance).into_complete(),
+        Some(MontyObject::none()),
+    );
+}
+
+#[test]
 fn from_import_loads_names_from_the_answer() {
     let progress = start("from tools import x, y as z\nx * z");
     let module = host_module("tools", 1, vec![("x", MontyObject::int(6)), ("y", MontyObject::int(7))]);
