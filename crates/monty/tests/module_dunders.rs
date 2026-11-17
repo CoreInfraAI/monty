@@ -2,8 +2,7 @@
 //! `__doc__`, `__annotations__`, `__spec__`, `__package__`, `__file__`,
 //! `__loader__`).
 //!
-//! Monty exposes these with fixed values for CPython compatibility but, having
-//! no module object or `globals()` dict, treats them as read-only. The
+//! Monty exposes fixed values for these names except the writable `__doc__`. The
 //! behaviours that match CPython's `__main__` script run (`__name__`,
 //! `__debug__`) are covered by the dual-run `test_cases/module__dunders.py`.
 //!
@@ -14,7 +13,7 @@
 //!   never `None`, so Monty declines to expose it rather than diverge on type)
 //! - `__annotations__` is always an empty dict (CPython 3.14 raises
 //!   `NameError` when a module has no annotations, per PEP 649)
-//! - reassigning any of these at module/global scope is rejected at compile
+//! - reassigning any of these except `__doc__` at module/global scope is rejected at compile
 //!   time with `NotImplementedError` (CPython allows it, except `__debug__`
 //!   which it rejects with `SyntaxError`)
 
@@ -159,9 +158,38 @@ fn reassign_name_at_module_scope_rejected() {
 }
 
 #[test]
-fn reassign_doc_at_module_scope_rejected() {
-    // CPython allows this (it sets the module docstring); Monty does not.
-    assert_reassignment_rejected("__doc__ = 'my module'", "__doc__");
+fn reassign_doc_at_module_scope() {
+    assert_eq!(eval("__doc__ = 'my module'\n__doc__"), MontyObject::string("my module"));
+    assert_eq!(
+        eval("def f():\n    global __doc__\n    __doc__ = 'updated'\nf()\n__doc__"),
+        MontyObject::string("updated"),
+    );
+}
+
+#[test]
+fn source_docstrings_preserve_indentation() {
+    let code = r#"
+"""Module.
+    Details.
+"""
+def f():
+    """Function.
+        Details.
+    """
+class C:
+    """Class.
+        Details.
+    """
+(__doc__, f.__doc__, C.__doc__)
+"#;
+    assert_eq!(
+        eval(code),
+        MontyObject::tuple([
+            MontyObject::string("Module.\n    Details.\n"),
+            MontyObject::string("Function.\n        Details.\n    "),
+            MontyObject::string("Class.\n        Details.\n    "),
+        ]),
+    );
 }
 
 #[test]

@@ -139,8 +139,7 @@ field after a defaulted one
     `@dataclass` generates (`__init__`, `__repr__`, `__eq__`, `__hash__`, and
     `__setattr__`/`__delattr__` when frozen, as CPython's options and the class
     body decide) reports `function` from `type()`, reprs as
-    `<function 'C.__init__' at 0x..>` and lacks `__name__`, as every Monty
-    function does (see [language.md](language.md)).
+    `<function 'C.__init__' at 0x..>` and lacks `__name__`.
 - **Calling a generated method directly needs an instance of a sandbox class
     as `self`.** `C.__repr__(5)` raises
     `TypeError: C.__repr__() requires a class instance as self, not 'int'`, where

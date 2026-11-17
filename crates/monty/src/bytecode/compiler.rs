@@ -968,7 +968,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
             func_def.is_async,
             body_code,
         )
-        .with_annotate(annotate);
+        .with_annotate(annotate)
+        .with_docstring(func_def.docstring);
         let func_id = self.interns.push_function(function);
 
         // 3. Compile and push default values (evaluated at definition time)
@@ -1745,14 +1746,11 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
     /// Rejects assignment to a read-only module dunder at module/global scope.
     ///
-    /// Monty exposes [`RESERVED_MODULE_DUNDERS`] with fixed values for CPython
-    /// compatibility but, unlike CPython, has no module namespace to write into,
-    /// so rebinding one is unsupported and surfaces as `NotImplementedError`.
-    /// Only stores to slot-backed module globals invoke this; explicit globals
-    /// dicts and function locals may bind these names.
+    /// `__doc__` may be rebound. Other reserved names are read-only for slot-backed
+    /// globals; explicit globals dicts and function locals may bind them.
     fn check_reserved_dunder_store(&self, target: &Identifier) -> Result<(), CompileError> {
         let name = self.interns.get_str(target.name_id);
-        if RESERVED_MODULE_DUNDERS.contains(&name) {
+        if name != "__doc__" && RESERVED_MODULE_DUNDERS.contains(&name) {
             Err(CompileError::not_implemented(
                 format!("cannot reassign read-only module attribute '{name}'"),
                 target.position,

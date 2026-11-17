@@ -611,10 +611,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
         Ok(write!(f, "<bound method>")?)
     }
 
-    /// `obj.method.__annotations__` and `__annotate__` are the function's, as
-    /// CPython's method type forwards them.
+    /// Read metadata from the underlying function so existing methods see edits.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        if !matches!(attr.as_str(vm.interns), "__annotations__" | "__annotate__") {
+        if !matches!(
+            attr.as_str(vm.interns),
+            "__annotations__" | "__annotate__" | "__doc__" | "__name__"
+        ) {
             return Ok(None);
         }
         let func = self.get(vm.heap).func.clone_with_heap(vm);
@@ -623,7 +625,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if !matches!(attr.as_str(vm.interns), "__annotations__" | "__annotate__") {
+        if !matches!(
+            attr.as_str(vm.interns),
+            "__annotations__" | "__annotate__" | "__doc__" | "__name__"
+        ) {
             args.drop_with(vm);
             return Err(ExcType::attribute_error("function", attr.as_str(vm.interns)));
         }

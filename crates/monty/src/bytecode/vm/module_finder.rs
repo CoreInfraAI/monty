@@ -275,7 +275,7 @@ impl VM<'_> {
         }
     }
 
-    /// A new module's globals: `__name__`, `__file__`, `__package__`, and
+    /// A new module's globals: `__doc__`, `__name__`, `__file__`, `__package__`, and
     /// `__path__` for a package, which a `path` ending in `/__init__.py` is.
     /// Returns an owned reference.
     fn module_namespace(&mut self, name: &str, path: &str) -> HeapId {
@@ -286,6 +286,7 @@ impl VM<'_> {
             (None, None) => "",
         };
         let mut entries = vec![
+            ("__doc__", Value::None),
             ("__name__", allocate_string(name, self.heap)),
             ("__file__", allocate_string(path, self.heap)),
             ("__package__", allocate_string(package, self.heap)),

@@ -4,12 +4,58 @@ use std::{
 };
 
 use crate::{
-    args::Signature,
-    bytecode::Code,
+    annotations,
+    args::{ArgValues, Signature},
+    bytecode::{CallResult, Code, VM},
+    defer_drop,
+    exception_private::RunResult,
     expressions::Identifier,
-    intern::{FunctionId, Interns},
+    heap::{DropGuard, HeapId},
+    intern::{FunctionId, Interns, StringId},
     namespace::NamespaceId,
+    value::Value,
 };
+
+/// Compiled metadata and annotations; runtime functions override the writable `__doc__`.
+pub(crate) fn function_getattr(
+    func_id: FunctionId,
+    globals: Option<HeapId>,
+    attr: &str,
+    vm: &mut VM<'_>,
+) -> Option<RunResult<CallResult>> {
+    let function = vm.interns.get_function(func_id);
+    match attr {
+        "__name__" => Some(Ok(CallResult::Value(Value::InternString(function.name.name_id)))),
+        "__doc__" => Some(Ok(CallResult::Value(
+            function.docstring.map_or(Value::None, Value::InternString),
+        ))),
+        _ => annotations::function_getattr(func_id, globals, attr, vm),
+    }
+}
+
+/// Calls a metadata or annotation attribute, consuming `args` even when absent.
+pub(crate) fn function_call_attr(
+    func_id: FunctionId,
+    globals: Option<HeapId>,
+    attr: &str,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Option<RunResult<CallResult>> {
+    let mut args_guard = DropGuard::new(args, vm);
+    let (_, vm) = args_guard.as_parts_mut();
+    let callee = match function_getattr(func_id, globals, attr, vm) {
+        Some(Ok(callee)) => callee.require_synchronous(vm),
+        Some(Err(err)) => Err(err),
+        None => return None,
+    };
+    let callee = match callee {
+        Ok(callee) => callee,
+        Err(err) => return Some(Err(err)),
+    };
+    let (args, vm) = args_guard.into_parts();
+    defer_drop!(callee, vm);
+    Some(vm.call_function(callee, args))
+}
 
 /// How an exact positional call can bypass argument binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +95,9 @@ pub(crate) struct Function {
     /// The function name (used for error messages and repr).
     #[serde(rename = "N")]
     pub name: Identifier,
+    /// Initial `__doc__`; each runtime function owns its writable copy.
+    #[serde(rename = "O", default)]
+    pub docstring: Option<StringId>,
     /// The function signature.
     #[serde(rename = "S")]
     pub signature: Signature,
@@ -135,6 +184,7 @@ impl Function {
     ) -> Self {
         Self {
             name,
+            docstring: None,
             signature,
             namespace_size,
             free_var_enclosing_slots,
@@ -153,6 +203,13 @@ impl Function {
     #[must_use]
     pub fn with_annotate(mut self, annotate: Option<FunctionId>) -> Self {
         self.annotate = annotate;
+        self
+    }
+
+    /// Attaches the source docstring before the compiled function is published.
+    #[must_use]
+    pub fn with_docstring(mut self, docstring: Option<StringId>) -> Self {
+        self.docstring = docstring;
         self
     }
 

@@ -95,6 +95,37 @@ fn a_host_module_exports_with_its_id() {
 }
 
 #[test]
+fn a_host_module_docstring_is_writable_through_aliases() {
+    let code = r"
+import tools as a
+b = a
+assert a.__doc__ == 'Host documentation'
+a.__doc__ = ['Sandbox documentation']
+assert b.__doc__ is a.__doc__
+b.__doc__.append('updated')
+assert a.__doc__ == ['Sandbox documentation', 'updated']
+a.__doc__ = a
+assert b.__doc__ is a
+a.__doc__ = None
+assert b.__doc__ is None
+";
+    let module = host_module("tools", 1, vec![("__doc__", MontyObject::string("Host documentation"))]);
+    assert_eq!(
+        answer_import(start(code), "tools", module).into_complete(),
+        Some(MontyObject::none())
+    );
+    assert_eq!(
+        answer_import(
+            start("import tools\ntools.__doc__"),
+            "tools",
+            host_module("tools", 2, vec![])
+        )
+        .into_complete(),
+        Some(MontyObject::none()),
+    );
+}
+
+#[test]
 fn from_import_loads_names_from_the_answer() {
     let progress = start("from tools import x, y as z\nx * z");
     let module = host_module("tools", 1, vec![("x", MontyObject::int(6)), ("y", MontyObject::int(7))]);

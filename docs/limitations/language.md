@@ -127,9 +127,9 @@ it: a class body under it stores its annotations as PEP 563 strings in
 
 ## Module-level dunder variables
 
-Monty has no module object and no `globals()` dict, but it exposes a fixed set
-of module-level dunders so common idioms (e.g. `if __name__ == '__main__':`)
-work. They are resolved on read; there is no real namespace entry behind them,
+The REPL's top-level namespace has no module object or `globals()` dict.
+It exposes module-level dunders for common idioms such as `if __name__ == '__main__':`.
+Except for writable `__doc__`, they are resolved on read without a namespace entry,
 so the values built per read (`__file__`, `__annotations__`) are fresh objects
 each time and `__file__ is __file__` is `False` where CPython gives `True`.
 
@@ -137,22 +137,24 @@ each time and `__file__ is __file__` is `False` where CPython gives `True`.
 | ----------------- | ------------ | ---------------------------- |
 | `__name__`        | `'__main__'` | `'__main__'`                 |
 | `__debug__`       | `True`       | `True`                       |
-| `__doc__`         | `None`       | `None` or docstring `str`    |
 | `__spec__`        | `None`       | `None`                       |
 | `__package__`     | `None`       | `None`                       |
 | `__annotations__` | empty `dict` | `NameError` (no annotations) |
 
-In Monty `__doc__` is always `None`, since module docstrings are never
-extracted, and `__annotations__` is always an empty `dict` because
+`__annotations__` is always an empty `dict` because
 module-level annotations are not stored (see [typing.md](typing.md)); CPython 3.14
 instead raises `NameError` when a module has no annotations (PEP 649).
 
-These names are **read-only**: assigning one at module or global scope (including
+These names are **read-only**, except `__doc__`: assigning one at module or global scope (including
 via `global __name__` inside a function, and augmented assignment like
 `__name__ += ...`) is rejected at compile time with
 `NotImplementedError: cannot reassign read-only module attribute '<name>'`.
-CPython instead *allows* rebinding most of them (it is how you set a module
-docstring), and rejects only `__debug__`, with a `SyntaxError`.
+CPython allows rebinding most of them and rejects only `__debug__`, with a `SyntaxError`.
+
+A leading string literal in each REPL feed sets the session's `__doc__`, as an `exec()` body would.
+A feed without one leaves the previous value intact.
+CPython's interactive prompt instead evaluates the string without setting `__doc__`.
+Docstrings retain their source indentation; CPython 3.13 and later strip common indentation at compile time.
 
 Binding one of these names as a **function local** is allowed (it is an
 ordinary local in a separate namespace), matching CPython, except `__debug__`,
@@ -180,17 +182,16 @@ nor safe to surface in the sandbox.
 
 ## Function objects
 
-A function exposes only `__annotations__` and `__annotate__` (see [typing.md](typing.md#annotations)):
-`__name__`, `__doc__`, `__qualname__` and `__module__` all raise
-`AttributeError: 'function' object has no attribute '<name>'`, and attributes cannot be set —
-`fn.tag = True` raises
-`AttributeError: 'function' object has no attribute 'tag' and no __dict__ for setting new attributes`. CPython supports
-all of these.
+User functions expose `__name__`, writable `__doc__`, `__annotations__` and `__annotate__`
+(see [typing.md](typing.md#annotations)).
+Other attributes, including `__qualname__`, `__module__`, `__defaults__` and `__dict__`, raise `AttributeError`.
+`__name__` is read-only, and arbitrary assignments such as `fn.tag = True` raise `AttributeError`.
+These restrictions prevent `functools.wraps`-style metadata copying.
+Bound methods forward these metadata reads but do not expose `__func__` or `__self__`.
+Host callables and builtins do not expose this metadata.
 
-This bounds what a decorator can do: it can call, wrap, store or replace the
-function it receives, but cannot ask the function about itself, so
-`functools.wraps`-style metadata copying, registries keyed by `fn.__name__`, and
-attribute tagging for later discovery all have no equivalent.
+Functions restored from older dumps without a runtime function object have read-only `__doc__ = None`.
+Redefining them creates writable function objects; new dumps preserve documentation and its aliases.
 
 ## Walrus assignments in lambda defaults
 

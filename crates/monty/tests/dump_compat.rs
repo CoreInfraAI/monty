@@ -580,6 +580,55 @@ fn persisted_key_hashes_are_stable() {
     assert_snapshot!(hashes.py_repr(), @"(-7376904247260835724, -8418895208483869890, -7578619387304540654, -6751866591645121981, -8097107109803033201, 2456456309100923238, -5014982954702616963, 2858064283329581446)");
 }
 
+/// Written by commit e0dd2ed2's runtime, before function hashes used heap identity.
+#[expect(dead_code, reason = "documents what the checked-in fixture holds")]
+const LEGACY_FUNCTION_HASH_STATE: &str = r"
+def plain():
+    pass
+
+def factory(value):
+    def defaulted(x=value):
+        return x
+    def captured():
+        return value
+    return defaulted, captured
+
+defaulted, captured = factory(42)
+functions = [plain, defaulted, captured]
+hashes = [hash(fn) for fn in functions]
+mapping = {fn: i for i, fn in enumerate(functions)}
+members = set(functions)
+tuple_mapping = {(fn, 'key'): i for i, fn in enumerate(functions)}
+frozen_mapping = {frozenset((fn, 'key')): i for i, fn in enumerate(functions)}
+";
+
+#[test]
+fn legacy_function_key_hashes_survive_dumps() {
+    let loaded = Dump::load(include_bytes!("fixtures/function_hashes_v16.bin")).unwrap();
+    let Session::Idle(mut repl) = loaded.state else {
+        panic!("the fixture was dumped idle");
+    };
+    let check = r"
+assert defaulted() == captured() == 42
+for i, fn in enumerate(functions):
+    assert hash(fn) == hashes[i]
+    assert mapping[fn] == i
+    assert fn in members
+    assert tuple_mapping[(fn, 'key')] == i
+    assert frozen_mapping[frozenset((fn, 'key'))] == i
+defaulted.__doc__ = 'updated'
+captured.__doc__ = captured
+fresh = [fn for i in range(128) for fn in factory(i)]
+assert len({hash(fn) for fn in fresh}) > 250
+";
+    repl.feed_run(check, vec![], PrintWriter::Stdout).unwrap();
+    let bytes = dump("hashes.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped idle");
+    };
+    restored.feed_run(check, vec![], PrintWriter::Stdout).unwrap();
+}
+
 /// The fixture for the current `DUMP_VERSION`; the name carries the version so
 /// a bump creates a new fixture while older supported fixtures remain for compatibility tests.
 fn fixture_path() -> PathBuf {

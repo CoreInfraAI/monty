@@ -99,8 +99,7 @@ file modules alike, with these differences from CPython:
 - A bundled module's `__all__` holds only the names of CPython's `__all__` that Monty implements, and is always a
     `list` (CPython's is a tuple for `asyncio`, `datetime`, `hashlib` and `tomllib`), in the order Monty defines them.
     Modules whose CPython counterpart has no `__all__` have none.
-    Host modules have no `__all__` (their dunders raise `AttributeError`), so every attribute not starting with `_` is
-    bound.
+    Host modules without `__all__` bind every attribute not starting with `_`.
 - `__all__` is read in full before the first name is bound, where CPython reads entry `i` just before binding it.
     The difference shows only through a class whose `__getitem__` has side effects, which all happen first, or when
     binding an earlier name fails, which CPython stops at before asking for the later entries.
@@ -118,11 +117,13 @@ Bundled modules that are not packages never request host submodules: `import os.
 `ModuleNotFoundError: No module named 'os.x'; 'os' is not a package`.
 The host's answer becomes the imported `module` object, with these differences from CPython:
 
-- Dunder attributes, including `m.__name__` and `m.__dict__`, raise `AttributeError`.
+- Dunder attributes other than `__doc__`, including `m.__name__` and `m.__dict__`, raise `AttributeError`
+    unless the host supplied them.
 - Every `import` requests the module again, including imports inside functions.
     Two imports bind distinct objects: `import m as a; import m as b` leaves `a is not b`.
-- Assigning an attribute raises `AttributeError`, as on a bundled module; a function call runs the host's current
-    attribute, and the next import binds the module afresh.
+- Assigning an attribute other than `__doc__` raises `AttributeError`, as on a bundled module.
+    Documentation edits belong to the module object and its aliases; a fresh import gets a fresh object.
+    Bundled modules initially expose `__doc__ = None`, rather than CPython's standard-library documentation.
 - Host exceptions are raised at the `import`.
 - Host modules are packages: a missing submodule, or `import m.x` for an attribute `x` that is not a module, raises
     `ModuleNotFoundError: No module named 'm.x'`.
@@ -166,8 +167,8 @@ Differences from CPython:
     Relative imports (`from . import x`) are rejected, so a package that uses them raises
     `ImportError: attempted relative import with no known parent package` when imported.
     Directories without an `__init__.py` (namespace packages) are not found.
-- Module globals are `__name__`, `__file__`, `__package__` and, for a package, `__path__`; `__spec__`, `__loader__`,
-    `__cached__`, `__builtins__` and `__doc__` are not defined.
+- Module globals are `__doc__`, `__name__`, `__file__`, `__package__` and, for a package, `__path__`;
+    `__spec__`, `__loader__`, `__cached__` and `__builtins__` are not defined.
     `m.__dict__` raises `AttributeError`, and `vars` and `dir` are not implemented (see [builtins.md](builtins.md)).
 - Module code looks names up in its globals and the builtins, never on the host: calling a
     [host function](../host-functions.md) by name raises `NameError` unless the importer binds it on the module first,

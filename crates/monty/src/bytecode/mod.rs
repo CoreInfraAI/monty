@@ -37,9 +37,8 @@ pub use vm::{FrameExit, VM, VMSnapshot};
 /// Monty has no module object or `globals()` dict, so these are not real
 /// namespace entries: they are resolved on *read* when the global slot is
 /// `Undefined` (see `VM::module_dunder`, whose match must stay in sync with
-/// this list) and are read-only — assigning one at module or global scope is
-/// rejected at compile time with a `NotImplementedError` (see
-/// `Compiler::compile_store`) rather than being silently ignored.
+/// this list). Except for `__doc__`, assignment at module or global scope is
+/// rejected at compile time (see `Compiler::compile_store`).
 /// Function-local variables that happen to share these names are unaffected.
 pub(crate) const RESERVED_MODULE_DUNDERS: [&str; 7] = [
     "__name__",

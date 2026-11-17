@@ -894,6 +894,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     def:
                         RawFunctionDef {
                             name,
+                            docstring,
                             signature,
                             body,
                             is_async,
@@ -909,7 +910,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         .into_iter()
                         .map(|d| self.prepare_expression(d))
                         .collect::<Result<Vec<_>, ParseError>>()?;
-                    let func = self.prepare_function_def(name, &signature, body, is_async, annotate, is_annotate)?;
+                    let mut func =
+                        self.prepare_function_def(name, &signature, body, is_async, annotate, is_annotate)?;
+                    func.docstring = docstring;
                     // In a class body, the method name becomes a bound member
                     // only now — its own parameter defaults (evaluated in class
                     // scope, above) must see the pre-binding state.
@@ -1957,6 +1960,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // `Node::FunctionDef` or uses it as a `Node::ClassDef`'s body.
         Ok(PreparedFunctionDef {
             name,
+            docstring: None,
             signature,
             body: prepared_body,
             namespace_size,
@@ -2125,6 +2129,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         );
         let body_def = PreparedFunctionDef {
             name: body_name,
+            docstring: None,
             signature: Signature::default(),
             body: prepared_body,
             namespace_size,
@@ -2291,6 +2296,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // Create the prepared function definition (lambdas are never async)
         let func_def = PreparedFunctionDef {
             name: lambda_name,
+            docstring: None,
             signature,
             body: prepared_body,
             namespace_size,

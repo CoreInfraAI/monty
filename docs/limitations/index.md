@@ -61,9 +61,9 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 - User-defined exception classes.
     The built-in exception types are a fixed set, and without inheritance you cannot add to it.
-- Function attributes.
-    `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
-    `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.
+- General function attributes.
+    User functions expose `__name__`, writable `__doc__`, and annotation attributes, but lack `__qualname__`,
+    `__module__` and arbitrary attributes, so `functools.wraps`-style metadata copying remains unsupported.
 - `compile`, `globals`, `__import__` and `super` — all raise `NameError`.
     `eval` and `exec` exist (source text only), and so does `locals()`; see [eval_exec.md](eval_exec.md).
 - Third-party packages.

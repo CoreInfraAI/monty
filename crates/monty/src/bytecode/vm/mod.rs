@@ -1826,24 +1826,23 @@ impl<'h> VM<'h> {
                         .namespace
                         .as_deref()
                         .and_then(FrameNamespace::dict_globals);
-                    if defaults_count == 0 && globals.is_none() {
-                        // No defaults - use inline Value::Function (no heap allocation)
-                        self.push(Value::DefFunction(func_id));
-                    } else {
-                        // Pop default values from stack (drain maintains order: first pushed = first in vec)
-                        let defaults = self.pop_n(defaults_count);
-                        if let Some(globals) = globals {
-                            self.heap.inc_ref(globals);
-                        }
-
-                        // Create FunctionDefaults on heap and push reference
-                        let heap_id = self.heap.allocate(HeapData::FunctionDefaults(FunctionDefaults {
-                            func_id,
-                            defaults,
-                            globals,
-                        }));
-                        self.push(Value::Ref(heap_id));
+                    let defaults = self.pop_n(defaults_count);
+                    if let Some(globals) = globals {
+                        self.heap.inc_ref(globals);
                     }
+                    let doc = self
+                        .interns
+                        .get_function(func_id)
+                        .docstring
+                        .map_or(Value::None, Value::InternString);
+                    let heap_id = self.heap.allocate(HeapData::FunctionDefaults(FunctionDefaults {
+                        func_id,
+                        defaults,
+                        globals,
+                        doc,
+                        hash_by_identity: true,
+                    }));
+                    self.push(Value::Ref(heap_id));
                 }
                 Opcode::MakeClosure => {
                     let (func_idx, defaults_count, cell_count) = self.current_frame.fetch_u16_u8_u8();
@@ -1893,6 +1892,12 @@ impl<'h> VM<'h> {
                         cells: cells.into_boxed_slice(),
                         defaults: defaults.into_boxed_slice(),
                         globals,
+                        doc: self
+                            .interns
+                            .get_function(func_id)
+                            .docstring
+                            .map_or(Value::None, Value::InternString),
+                        hash_by_identity: true,
                     }));
                     self.push(Value::Ref(heap_id));
                 }

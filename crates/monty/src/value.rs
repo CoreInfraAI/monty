@@ -12,12 +12,12 @@ use serde::de::Error as _;
 use smallvec::smallvec;
 
 use crate::{
-    annotations,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
+    function::function_getattr,
     hash::{HashValue, hash_f64, hash_named, hash_one},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     identity::Identity,
@@ -85,7 +85,7 @@ pub(crate) enum Value {
     /// Module functions require importing a module to access (e.g., `asyncio.gather`).
     #[serde(rename = "M")]
     ModuleFunction(ModuleFunctions),
-    /// A function defined in the module (not a closure, doesn't capture any variables)
+    /// An inline function from an older dump or synthesized annotation code.
     #[serde(rename = "D")]
     DefFunction(FunctionId),
     /// A marker value representing special objects like sys.stdout/stderr.
@@ -1287,9 +1287,9 @@ impl Value {
                     None => Err(Type::from(*t).attribute_error(attr, vm)),
                 };
             }
-            // A plain `def` has its PEP 649 attributes and nothing else.
+            // Inline functions occur in older dumps and synthesized annotation code.
             Self::DefFunction(func_id) => {
-                if let Some(result) = annotations::function_getattr(*func_id, None, attr.as_str(vm.interns), vm) {
+                if let Some(result) = function_getattr(*func_id, None, attr.as_str(vm.interns), vm) {
                     return result;
                 }
             }

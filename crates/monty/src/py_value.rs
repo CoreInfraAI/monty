@@ -10,7 +10,6 @@ use std::{
 use num_bigint::BigInt;
 
 use crate::{
-    annotations,
     args::ArgValues,
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
@@ -18,6 +17,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     expressions::CmpOperator,
     fstring::FormatFloat,
+    function::function_call_attr,
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapObjectRead, HeapReadOutput, HeapReader},
     heap_data::heap_payloads,
@@ -777,7 +777,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
             Self::Builtin(Builtins::Type(ty)) => Type::from(*ty).call_class_method(attr, args, vm),
             Self::DefFunction(func_id) => {
-                match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
+                match function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
                     Some(result) => result,
                     None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
                 }

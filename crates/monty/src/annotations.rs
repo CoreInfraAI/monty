@@ -33,9 +33,8 @@ def __monty_class_annotations(cls, annotate, classdict, call_annotate, cache):
     return result
 ";
 
-/// `f.__annotate__` and `f.__annotations__` of a `def`, the only attributes
-/// Monty's functions have (see `limitations/language.md`); `None` for any other
-/// name. `globals` is the exec dict the `def` was made under, if any.
+/// `f.__annotate__` and `f.__annotations__`; `None` for other attributes.
+/// `globals` is the exec dict the `def` was made under, if any.
 pub(crate) fn function_getattr(
     func_id: FunctionId,
     globals: Option<HeapId>,
@@ -47,32 +46,6 @@ pub(crate) fn function_getattr(
         "__annotations__" => Some(function_annotations(func_id, globals, vm)),
         _ => None,
     }
-}
-
-/// `f.__annotate__(format)` and `f.__annotations__(...)`: the attribute, called.
-/// `None` for any other name, which has no attribute to call.
-pub(crate) fn function_call_attr(
-    func_id: FunctionId,
-    globals: Option<HeapId>,
-    attr: &str,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Option<RunResult<CallResult>> {
-    // The guard releases `args` when there is no attribute or computing it fails.
-    let mut args_guard = DropGuard::new(args, vm);
-    let (_, vm) = args_guard.as_parts_mut();
-    let callee = match function_getattr(func_id, globals, attr, vm) {
-        Some(Ok(callee)) => callee.require_synchronous(vm),
-        Some(Err(err)) => Err(err),
-        None => return None,
-    };
-    let callee = match callee {
-        Ok(callee) => callee,
-        Err(err) => return Some(Err(err)),
-    };
-    let (args, vm) = args_guard.into_parts();
-    defer_drop!(callee, vm);
-    Some(vm.call_function(callee, args))
 }
 
 /// `f.__annotations__`: runs `__annotate__(VALUE)` on every access, since a
@@ -101,6 +74,8 @@ pub(crate) fn function_annotate(func_id: FunctionId, globals: Option<HeapId>, vm
                 func_id: annotate_id,
                 defaults: Vec::new(),
                 globals: Some(dict),
+                doc: Value::None,
+                hash_by_identity: true,
             };
             Value::Ref(vm.heap.allocate(HeapData::FunctionDefaults(function)))
         }

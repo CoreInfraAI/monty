@@ -1,24 +1,18 @@
-use std::{
-    collections::hash_map::DefaultHasher,
-    fmt::Write,
-    hash::{Hash, Hasher},
-    mem,
-    ops::Deref,
-};
+use std::{fmt::Write, mem, ops::Deref};
 
 use monty_types::ExcType;
 
 use crate::{
-    annotations,
     args::ArgValues,
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcTypeExt, RunResult, SimpleException},
-    hash::HashValue,
-    heap::{HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    function::{function_call_attr, function_getattr},
+    hash::{HashValue, hash_one, identity_hash},
+    heap::{HeapId, HeapItem, HeapObjectRead},
     intern::FunctionId,
-    types::{LazyHeapSet, LongInt, PyTrait, Type},
+    types::{LazyHeapSet, LongInt, PyTrait, Type, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
 };
 
@@ -424,13 +418,8 @@ impl Deref for CellValue {
     }
 }
 
-/// A closure: a function that captures variables from enclosing scopes.
-///
-/// Contains a reference to the function definition, a vector of captured cell HeapIds,
-/// evaluated default values (if any) and the globals dict it was defined under
-/// (if any). When the closure is called, the cells are passed to the frame for
-/// variable access. When the closure is dropped, we must decrement the ref
-/// count on each captured cell, each default value and the globals dict.
+/// A runtime function owning captured cells, evaluated defaults, documentation
+/// and an optional globals dict. Calls borrow the cells to access enclosing scopes.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Closure {
     /// The function definition being captured.
@@ -448,14 +437,16 @@ pub(crate) struct Closure {
     /// defined under; `None` when its globals are module slots.
     #[serde(rename = "G")]
     pub globals: Option<HeapId>,
+    /// Writable `__doc__`, shared by aliases of this function.
+    #[serde(rename = "O", default = "empty_docstring")]
+    pub doc: Value,
+    /// Older dumps omit this flag; their dict and set keys retain definition-based hashes.
+    #[serde(rename = "H", default)]
+    pub hash_by_identity: bool,
 }
 
-/// A `def` that needs a heap object but captures nothing: it has evaluated
-/// default values, an explicit globals dict, or both.
-///
-/// When the function is called, defaults are cloned for missing optional
-/// parameters and the frame resolves globals through the dict. When dropped,
-/// we must decrement the ref count on each default value and the dict.
+/// A runtime function without captured cells, owning its defaults, documentation
+/// and optional globals dict. Every execution of a `def` creates a fresh object.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FunctionDefaults {
     /// The function definition being captured.
@@ -468,6 +459,17 @@ pub(crate) struct FunctionDefaults {
     /// was defined under; `None` when its globals are module slots.
     #[serde(rename = "G")]
     pub globals: Option<HeapId>,
+    /// Writable `__doc__`, shared by aliases of this function.
+    #[serde(rename = "O", default = "empty_docstring")]
+    pub doc: Value,
+    /// Older dumps omit this flag; their dict and set keys retain definition-based hashes.
+    #[serde(rename = "H", default)]
+    pub hash_by_identity: bool,
+}
+
+/// Dumps written before docstrings were retained have no documentation.
+fn empty_docstring() -> Value {
+    Value::None
 }
 
 impl HeapItem for CellValue {
@@ -485,6 +487,7 @@ impl HeapItem for Closure {
             default.py_dec_ref_ids(stack);
         }
         stack.extend(self.globals);
+        self.doc.py_dec_ref_ids(stack);
     }
 }
 
@@ -495,6 +498,7 @@ impl HeapItem for FunctionDefaults {
             default.py_dec_ref_ids(stack);
         }
         stack.extend(self.globals);
+        self.doc.py_dec_ref_ids(stack);
     }
 }
 
@@ -524,22 +528,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Closure> {
         None
     }
 
-    /// Two closures over the same `def` are equal only if they captured the
-    /// same cells; the defaults play no part, as in CPython.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(match other.read_heap(vm) {
-            Some(HeapReadOutput::Closure(other)) => {
-                let this = self.get(vm.heap);
-                let other = other.get(vm.heap);
-                Some(this.func_id == other.func_id && this.cells == other.cells)
-            }
-            _ => None,
-        })
+    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        Ok(None)
     }
 
-    /// Hashes by `def`, so a closure and its equal share a bucket.
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        Ok(Some(hash_func_id(self.get(vm.heap).func_id)))
+        let closure = self.get(vm.heap);
+        Ok(Some(if closure.hash_by_identity {
+            identity_hash(self.id())
+        } else {
+            hash_one(closure.func_id)
+        }))
     }
 
     fn py_bool(&self, _: &mut VM<'h>) -> RunResult<bool> {
@@ -548,7 +547,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Closure> {
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _: &mut LazyHeapSet) -> RunResult<()> {
         let func_id = self.get(vm.heap).func_id;
-        Ok(vm.interns.get_function(func_id).py_repr_fmt(f, vm.interns, 0)?)
+        Ok(vm
+            .interns
+            .get_function(func_id)
+            .py_repr_fmt(f, vm.interns, self.py_identity().encoded())?)
     }
 
     fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -560,15 +562,33 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Closure> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let closure = self.get(vm.heap);
+        if attr.as_str(vm.interns) == "__doc__" {
+            return Ok(Some(CallResult::Value(closure.doc.clone_with_heap(vm))));
+        }
         let (func_id, globals) = (closure.func_id, closure.globals);
-        annotations::function_getattr(func_id, globals, attr.as_str(vm.interns), vm).transpose()
+        function_getattr(func_id, globals, attr.as_str(vm.interns), vm).transpose()
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let closure = self.get(vm.heap);
+        if attr.as_str(vm.interns) == "__doc__" {
+            let doc = closure.doc.clone_with_heap(vm);
+            defer_drop!(doc, vm);
+            return vm.call_function(doc, args);
+        }
         let (func_id, globals) = (closure.func_id, closure.globals);
-        annotations::function_call_attr(func_id, globals, attr.as_str(vm.interns), args, vm)
+        function_call_attr(func_id, globals, attr.as_str(vm.interns), args, vm)
             .unwrap_or_else(|| Err(ExcType::attribute_error("function", attr.as_str(vm.interns))))
+    }
+
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if name.as_str(vm.interns) == "__doc__" {
+            mem::replace(&mut self.get_mut(vm.heap).doc, value).drop_with(vm);
+            Ok(())
+        } else {
+            value.drop_with(vm);
+            Err(ExcType::attribute_error_no_setattr("function", name.as_str(vm.interns)))
+        }
     }
 }
 
@@ -581,19 +601,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
         None
     }
 
-    /// Equal when they decorate the same `def`: with no captured scope, the
-    /// defaults are all that could differ and CPython ignores those too.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(match other.read_heap(vm) {
-            Some(HeapReadOutput::FunctionDefaults(other)) => {
-                Some(self.get(vm.heap).func_id == other.get(vm.heap).func_id)
-            }
-            _ => None,
-        })
+    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        Ok(None)
     }
 
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        Ok(Some(hash_func_id(self.get(vm.heap).func_id)))
+        let function = self.get(vm.heap);
+        Ok(Some(if function.hash_by_identity {
+            identity_hash(self.id())
+        } else {
+            hash_one(function.func_id)
+        }))
     }
 
     fn py_bool(&self, _: &mut VM<'h>) -> RunResult<bool> {
@@ -602,7 +620,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _: &mut LazyHeapSet) -> RunResult<()> {
         let func_id = self.get(vm.heap).func_id;
-        Ok(vm.interns.get_function(func_id).py_repr_fmt(f, vm.interns, 0)?)
+        Ok(vm
+            .interns
+            .get_function(func_id)
+            .py_repr_fmt(f, vm.interns, self.py_identity().encoded())?)
     }
 
     fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -614,23 +635,34 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let function = self.get(vm.heap);
+        if attr.as_str(vm.interns) == "__doc__" {
+            return Ok(Some(CallResult::Value(function.doc.clone_with_heap(vm))));
+        }
         let (func_id, globals) = (function.func_id, function.globals);
-        annotations::function_getattr(func_id, globals, attr.as_str(vm.interns), vm).transpose()
+        function_getattr(func_id, globals, attr.as_str(vm.interns), vm).transpose()
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let function = self.get(vm.heap);
+        if attr.as_str(vm.interns) == "__doc__" {
+            let doc = function.doc.clone_with_heap(vm);
+            defer_drop!(doc, vm);
+            return vm.call_function(doc, args);
+        }
         let (func_id, globals) = (function.func_id, function.globals);
-        annotations::function_call_attr(func_id, globals, attr.as_str(vm.interns), args, vm)
+        function_call_attr(func_id, globals, attr.as_str(vm.interns), args, vm)
             .unwrap_or_else(|| Err(ExcType::attribute_error("function", attr.as_str(vm.interns))))
     }
-}
 
-/// Hashes a function identity, the hash both `def` representations report.
-fn hash_func_id(func_id: FunctionId) -> HashValue {
-    let mut hasher = DefaultHasher::new();
-    func_id.hash(&mut hasher);
-    HashValue::new(hasher.finish())
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if name.as_str(vm.interns) == "__doc__" {
+            mem::replace(&mut self.get_mut(vm.heap).doc, value).drop_with(vm);
+            Ok(())
+        } else {
+            value.drop_with(vm);
+            Err(ExcType::attribute_error_no_setattr("function", name.as_str(vm.interns)))
+        }
+    }
 }
 
 impl HeapItem for SimpleException {

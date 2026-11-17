@@ -464,6 +464,141 @@ fn repl_dump_load_survives_between_snippets() {
     assert_eq!(output, MontyObject::int(42));
 }
 
+#[test]
+fn docstrings_persist_across_feeds_and_dumps() {
+    let code = r#"
+"""Session documentation."""
+import math
+
+def factory():
+    def f():
+        """Original."""
+        return 1
+    return f
+
+def captured_factory(value):
+    def f():
+        """Captured."""
+        return value
+    return f
+
+class Tool:
+    def run(self, value=2):
+        """Run."""
+        return value
+
+first = factory()
+second = factory()
+alias = first
+captured = captured_factory(3)
+method = Tool().run
+first.__doc__ = ['updated']
+captured.__doc__ = captured
+math.__doc__ = ['module']
+"#;
+    let (mut repl, _) = init_repl(code);
+    assert_eq!(
+        feed_run_print(&mut repl, "__doc__").unwrap(),
+        MontyObject::string("Session documentation."),
+    );
+    feed_run_print(
+        &mut repl,
+        "Tool.run.__doc__ = 'New instructions'\n__doc__ = 'Updated session'",
+    )
+    .unwrap();
+    let mut loaded = round_trip_repl(&repl);
+    let check = r"
+assert __doc__ == 'Updated session'
+assert first is alias
+assert first is not second
+assert first.__doc__ == ['updated']
+assert second.__doc__ == 'Original.'
+assert captured.__doc__ is captured
+assert captured() == 3
+assert first.__name__ == 'f'
+assert method.__name__ == 'run'
+assert method.__doc__ == 'New instructions'
+assert method() == 2
+again = math
+assert again.__doc__ == ['module']
+alias.__doc__.append('after restore')
+assert first.__doc__ == ['updated', 'after restore']
+Tool.run.__doc__ = None
+assert method.__doc__ is None
+";
+    feed_run_print(&mut loaded, check).unwrap();
+    // The restored session owns its mutable objects independently of the original.
+    feed_run_print(
+        &mut repl,
+        "assert first.__doc__ == ['updated']\nassert method.__doc__ == 'New instructions'",
+    )
+    .unwrap();
+}
+
+#[test]
+fn function_identity_hashes_survive_dumps() {
+    let (mut repl, _) = init_repl(
+        r"
+def factory(value):
+    def plain():
+        pass
+    def defaulted(x=value):
+        return x
+    def captured():
+        return value
+    return plain, defaulted, captured
+
+functions = [fn for i in range(256) for fn in factory(i)]
+# A shared definition must not send every function into the same hash bucket.
+assert len({hash(fn) for fn in functions}) > 700
+hashes = [hash(fn) for fn in functions]
+identities = [id(fn) for fn in functions]
+mapping = {fn: i for i, fn in enumerate(functions)}
+members = set(functions)
+tuple_mapping = {(fn, 'key'): i for i, fn in enumerate(functions)}
+frozen_mapping = {frozenset((fn, 'key')): i for i, fn in enumerate(functions)}
+",
+    );
+    let check = r"
+for i, fn in enumerate(functions):
+    fn.__doc__ = ['changed']
+    assert hash(fn) == hashes[i]
+    assert id(fn) == identities[i]
+    assert mapping[fn] == i
+    assert fn in members
+    assert tuple_mapping[(fn, 'key')] == i
+    assert frozen_mapping[frozenset((fn, 'key'))] == i
+    assert repr(fn).endswith(f' at {hex(id(fn))}>')
+";
+    feed_run_print(&mut repl, check).unwrap();
+    for index in 0..3 {
+        let expected = feed_run_print(&mut repl, &format!("repr(functions[{index}])")).unwrap();
+        let exported = feed_run_print(&mut repl, &format!("functions[{index}]")).unwrap();
+        assert_eq!(exported, MontyObject::repr(expected.as_ref().as_str().unwrap()));
+    }
+    let mut loaded = round_trip_repl(&repl);
+    feed_run_print(&mut loaded, check).unwrap();
+    feed_run_print(
+        &mut loaded,
+        r"
+fresh = [fn for i in range(256) for fn in factory(i)]
+assert len({hash(fn) for fn in fresh}) > 700
+for fn in fresh:
+    assert fn not in members
+    members.add(fn)
+assert len(members) == 1536
+",
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_string_feed_keeps_its_result_and_sets_the_module_docstring() {
+    let (mut repl, value) = init_repl("'Session documentation'");
+    assert_eq!(value, MontyObject::string("Session documentation"));
+    assert_eq!(feed_run_print(&mut repl, "__doc__").unwrap(), value);
+}
+
 /// The current `decimal` context is session state: a `prec` set in one feed governs
 /// the next, survives a failing feed, and survives a dump round-trip.
 #[test]
@@ -630,6 +765,7 @@ fn repl_abandoned_snippet_keeps_rebound_globals_usable() {
     let (repl, _) = init_repl("x = 'old'\ndef f():\n    return 1");
     let progress = repl.feed_start(REBIND, vec![], PrintWriter::Stdout).unwrap();
     check(round_trip_progress(&progress).into_repl());
+    drop(progress.into_repl());
 
     let (repl, _) = init_repl("x = 'old'\ndef f():\n    return 1\nasync def main():\n    await ext_fn()");
     let progress = repl
@@ -1704,6 +1840,7 @@ async def main():
     let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
     let loaded = round_trip_progress(&progress);
     let state = loaded.into_resolve_futures().expect("expected resolve futures");
+    drop(progress.into_repl());
     assert_eq!(state.pending_call_ids(), &[call_id]);
 
     let progress = state

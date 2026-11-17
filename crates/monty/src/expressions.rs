@@ -949,6 +949,9 @@ pub enum Node<F> {
 pub struct PreparedFunctionDef {
     /// The function name identifier with resolved namespace index.
     pub name: Identifier,
+    /// The source docstring, if the function has one.
+    #[serde(default)]
+    pub docstring: Option<StringId>,
     /// The function signature with parameter names and default counts.
     pub signature: Signature,
     /// The prepared function body with resolved names.

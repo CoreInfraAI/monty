@@ -7,7 +7,10 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{
+        DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapRead, HeapReadMut, HeapReadOutput,
+        heap_read_ref_as_field_mut,
+    },
     intern::{Interns, StaticStrings, StringId},
     types::{Dict, List},
     value::{EitherStr, Value},
@@ -240,13 +243,22 @@ impl<'h> HeapRead<'h, Module> {
             )),
         }
     }
+}
 
-    /// Binds an attribute on a file module's namespace, so the module's own
-    /// functions see it; other modules reject assignment.
+impl<'h> HeapReadMut<'h, Module> {
+    /// File modules share their namespace with their functions. Other modules
+    /// accept only documentation edits, stored in their existing attribute dict.
     pub fn py_set_attr(&self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let Some(namespace) = self.get(vm.heap).namespace() else {
-            value.drop_with(vm);
-            return Err(ExcType::attribute_error_no_setattr("module", name.as_str(vm.interns)));
+            return if name.as_str(vm.interns) == "__doc__" {
+                let key = name.as_value(vm.heap);
+                let attrs = heap_read_ref_as_field_mut!(self, Module, attrs);
+                attrs.set(key, value, vm)?.drop_with(vm);
+                Ok(())
+            } else {
+                value.drop_with(vm);
+                Err(ExcType::attribute_error_no_setattr("module", name.as_str(vm.interns)))
+            };
         };
         let key = name.as_value(vm.heap);
         let HeapReadOutput::Dict(dict) = vm.heap.read(namespace) else {
@@ -258,7 +270,9 @@ impl<'h> HeapRead<'h, Module> {
         old.drop_with(vm);
         Ok(())
     }
+}
 
+impl<'h> HeapRead<'h, Module> {
     /// An owned copy of the attribute `name`, from the file namespace or `attrs`.
     fn attr_value(&self, name: &str, vm: &VM<'h>) -> Option<Value> {
         let module = self.get(vm.heap);
@@ -272,6 +286,7 @@ impl<'h> HeapRead<'h, Module> {
         attrs
             .get_by_str(name, vm.heap, vm.interns)
             .map(|value| value.clone_with_heap(vm.heap))
+            .or_else(|| (name == "__doc__").then_some(Value::None))
     }
 }
 

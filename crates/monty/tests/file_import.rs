@@ -148,6 +148,32 @@ fn module_file(path: &str, source: &str) -> ExtFunctionResult {
 const FOO: &str = "x = 41\ndef f():\n    return x + 1\n";
 
 #[test]
+fn module_docstrings_share_the_function_globals() {
+    let files = &[
+        (
+            "/proj/documented.py",
+            "'Module documentation'\ndef f():\n    'Function documentation'\n    return __doc__",
+        ),
+        ("/proj/undocumented.py", "x = 1"),
+    ];
+    let code = r"
+import documented as a
+import documented as b
+import undocumented
+assert a.__doc__ == 'Module documentation'
+assert a.f.__doc__ == 'Function documentation'
+assert a.f.__name__ == 'f'
+assert undocumented.__doc__ is None
+a.__doc__ = 'Changed'
+assert b.__doc__ == 'Changed'
+assert b.f() == 'Changed'
+a.f.__doc__ = ['Changed function']
+assert b.f.__doc__ == ['Changed function']
+";
+    assert_eq!(eval(code, files), MontyObject::none());
+}
+
+#[test]
 fn a_module_runs_once_per_session() {
     let files = &[("/proj/counter.py", "print('loading')\nitems = []\n")];
     let mut imports = Vec::new();

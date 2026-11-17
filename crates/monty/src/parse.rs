@@ -141,6 +141,8 @@ impl ParsedSignature {
 pub struct RawFunctionDef {
     /// The function name identifier (not yet resolved to a namespace index).
     pub name: Identifier,
+    /// The leading string literal, preserved without cleaning indentation.
+    pub docstring: Option<StringId>,
     /// The parsed function signature with parameter names and default expressions.
     pub signature: ParsedSignature,
     /// The unprepared function body (names not yet resolved).
@@ -256,7 +258,17 @@ pub(crate) fn parse_module_with_filename_id(
         .map(Ranged::start)
         .collect();
     let mut parser = Parser::new(code, filename_id, interner, class_keyword_offsets, future_annotations);
-    let nodes = parser.parse_statements(parsed.into_syntax().body)?;
+    let body = parsed.into_syntax().body;
+    let has_docstring = body.first().is_some_and(is_docstring);
+    let mut nodes = parser.parse_statements(body)?;
+    if has_docstring {
+        let Node::Expr(value) = nodes[0].clone() else {
+            unreachable!("a docstring parses as an expression")
+        };
+        let target = Identifier::new(parser.interner.intern("__doc__"), value.position);
+        // Retain the expression so a feed containing only a string still returns it.
+        nodes.insert(0, Node::Assign { target, object: value });
+    }
     Ok(ParsedModule {
         nodes,
         future_annotations: parser.future_annotations,
@@ -1165,13 +1177,26 @@ impl<'a, 'i> Parser<'a, 'i> {
                 name.position,
             )?))
         };
-        // Parse function body recursively
-        let body = self.parse_statements(function.body)?;
+        let has_docstring = function.body.first().is_some_and(is_docstring);
+        let mut body = self.parse_statements(function.body)?;
+        let docstring = if has_docstring {
+            let Node::Expr(ExprLoc {
+                expr: Expr::Literal(Literal::Str(id)),
+                ..
+            }) = body.remove(0)
+            else {
+                unreachable!("a docstring parses as a string literal")
+            };
+            Some(id)
+        } else {
+            None
+        };
         let is_async = function.is_async;
 
         Ok((
             RawFunctionDef {
                 name,
+                docstring,
                 signature,
                 body,
                 is_async,
@@ -1259,6 +1284,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         ];
         Ok(RawFunctionDef {
             name: Identifier::new(name_id, position),
+            docstring: None,
             signature: ParsedSignature {
                 args: vec![ParsedParam {
                     name: format_id,
@@ -1531,6 +1557,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         // without binding a function name).
         let body = RawFunctionDef {
             name,
+            docstring: None,
             signature: ParsedSignature::default(),
             body,
             is_async: false,

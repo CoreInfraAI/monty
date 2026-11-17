@@ -1994,6 +1994,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             if let Some(globals) = closure.globals {
                 on_child(globals);
             }
+            if let Value::Ref(id) = &closure.doc {
+                on_child(*id);
+            }
         }
         HeapData::FunctionDefaults(fd) => {
             // Add default values that are heap references
@@ -2004,6 +2007,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
             if let Some(globals) = fd.globals {
                 on_child(globals);
+            }
+            if let Value::Ref(id) = &fd.doc {
+                on_child(*id);
             }
         }
         HeapData::Cell(cell) => {
@@ -2230,6 +2236,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
                 default.py_dec_ref_ids(stack);
             }
             stack.extend(closure.globals);
+            closure.doc.py_dec_ref_ids(stack);
         }
         HeapData::FunctionDefaults(fd) => {
             // Decrement ref count for default values that are heap references
@@ -2237,6 +2244,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
                 default.py_dec_ref_ids(stack);
             }
             stack.extend(fd.globals);
+            fd.doc.py_dec_ref_ids(stack);
         }
         HeapData::Cell(cell) => cell.0.py_dec_ref_ids(stack),
         HeapData::HostClass(dc) => dc.py_dec_ref_ids(stack),
