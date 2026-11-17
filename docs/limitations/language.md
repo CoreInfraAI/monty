@@ -188,7 +188,9 @@ Other attributes, including `__qualname__`, `__module__`, `__defaults__` and `__
 `__name__` is read-only, and arbitrary assignments such as `fn.tag = True` raise `AttributeError`.
 These restrictions prevent `functools.wraps`-style metadata copying.
 Bound methods forward these metadata reads but do not expose `__func__` or `__self__`.
-Host callables and builtins do not expose this metadata.
+Host callables expose only read-only `__name__` and `__doc__`; their documentation comes from the
+[most recent host conversion](host-values.md#host-function-proxies).
+Builtins do not expose this metadata.
 
 Functions restored from older dumps without a runtime function object have read-only `__doc__ = None`.
 Redefining them creates writable function objects; new dumps preserve documentation and its aliases.

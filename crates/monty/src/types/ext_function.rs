@@ -3,10 +3,10 @@ use std::{fmt::Write, sync::Arc};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    exception_private::RunResult,
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::HeapObjectRead,
-    types::{LazyHeapSet, PyTrait, Type},
+    heap::{DropWithContext, HeapObjectRead},
+    types::{LazyHeapSet, PyTrait, Type, str::allocate_string},
     value::{EitherStr, Value},
 };
 
@@ -24,6 +24,8 @@ pub(crate) struct ExtFunction {
     name: Arc<str>,
     #[serde(rename = "a")]
     is_async: bool,
+    #[serde(rename = "d", skip_serializing_if = "Option::is_none")]
+    docstring: Option<String>,
 }
 
 impl ExtFunction {
@@ -32,12 +34,23 @@ impl ExtFunction {
         Self {
             name: Arc::from(name),
             is_async,
+            docstring: None,
         }
     }
 
     /// Returns the function name as text.
     pub(crate) fn as_str(&self) -> &str {
         &self.name
+    }
+
+    /// Documentation from the most recent host conversion of this function.
+    pub(crate) fn docstring(&self) -> Option<&str> {
+        self.docstring.as_deref()
+    }
+
+    /// Updates the shared proxy so existing aliases see the host's current documentation.
+    pub(crate) fn set_docstring(&mut self, docstring: Option<String>) {
+        self.docstring = docstring;
     }
 
     /// Whether calls start without waiting for the host (see [`CallResult::External`]).
@@ -57,7 +70,7 @@ impl ExtFunction {
 }
 
 /// An [`ExtFunction`] as a dump stores it: a bare name before host functions
-/// could be async, the two-field map since.
+/// could be async, or a map whose documentation field is optional.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum DumpedExtFunction {
@@ -66,14 +79,24 @@ enum DumpedExtFunction {
         n: Arc<str>,
         #[serde(default)]
         a: bool,
+        #[serde(default)]
+        d: Option<String>,
     },
 }
 
 impl From<DumpedExtFunction> for ExtFunction {
     fn from(dumped: DumpedExtFunction) -> Self {
         match dumped {
-            DumpedExtFunction::Name(name) => Self { name, is_async: false },
-            DumpedExtFunction::Full { n, a } => Self { name: n, is_async: a },
+            DumpedExtFunction::Name(name) => Self {
+                name,
+                is_async: false,
+                docstring: None,
+            },
+            DumpedExtFunction::Full { n, a, d } => Self {
+                name: n,
+                is_async: a,
+                docstring: d,
+            },
         }
     }
 }
@@ -105,6 +128,34 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ExtFunction> {
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _: &mut LazyHeapSet) -> RunResult<()> {
         Ok(write!(f, "<function '{}' external>", self.get(vm.heap).as_str())?)
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let function = self.get(vm.heap);
+        let value = match attr.as_str(vm.interns) {
+            "__name__" => allocate_string(function.as_str(), vm.heap),
+            "__doc__" => function
+                .docstring()
+                .map_or(Value::None, |doc| allocate_string(doc, vm.heap)),
+            _ => return Ok(None),
+        };
+        Ok(Some(CallResult::Value(value)))
+    }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        args.drop_with(vm);
+        let type_name = match attr.as_str(vm.interns) {
+            "__name__" => "str",
+            "__doc__" => {
+                if self.get(vm.heap).docstring().is_some() {
+                    "str"
+                } else {
+                    "NoneType"
+                }
+            }
+            name => return Err(ExcType::attribute_error("function", name)),
+        };
+        Err(ExcType::type_error_not_callable_object(type_name))
     }
 
     /// Suspends: only the host can run this, so the VM yields the name and the

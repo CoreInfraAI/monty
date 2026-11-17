@@ -7,6 +7,184 @@
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{CompileOptions, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
 
+/// Metadata is discoverable and survives export, including empty and missing docstrings.
+#[test]
+fn host_function_metadata_round_trips() {
+    for doc in [
+        None,
+        Some(""),
+        Some("Search for café locations.\n\nReturns matching places."),
+    ] {
+        for is_async in [false, true] {
+            let input = if is_async {
+                MontyObject::async_function("tools.search", doc.map(str::to_owned))
+            } else {
+                MontyObject::function("tools.search", doc.map(str::to_owned))
+            };
+            let mut runner = MontyRun::new(
+                r"
+assert f.__name__ == 'tools.search'
+assert getattr(f, '__doc__') == expected_doc
+assert hasattr(f, '__doc__')
+assert dir(f) == ['__doc__', '__name__']
+alias = f
+assert alias.__doc__ == expected_doc
+f
+"
+                .to_owned(),
+                "test.py",
+                vec!["f".to_owned(), "expected_doc".to_owned()],
+                CompileOptions::default(),
+            )
+            .unwrap();
+            let expected_doc = doc.map_or_else(MontyObject::none, MontyObject::string);
+            assert_eq!(runner.run_no_limits(vec![input.clone(), expected_doc]).unwrap(), input);
+        }
+    }
+}
+
+/// Metadata belongs to the cached function, while sync and async proxies remain separate.
+#[test]
+fn host_doc_updates_reach_aliases_and_survive_dumps() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "alias = f\nkey = {f: 'retained'}",
+        vec![(
+            "f".to_owned(),
+            MontyObject::function("search", Some("Original.".to_owned())),
+        )],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut repl) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected idle session");
+    };
+    let result = repl
+        .feed_run(
+            r"
+assert f.__doc__ == 'Original.'
+assert f.__name__ == 'search'
+assert f is alias
+f
+",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    assert_eq!(result, MontyObject::function("search", Some("Original.".to_owned())));
+    for doc in [Some("Updated."), Some(""), None] {
+        let result = repl
+            .feed_run(
+                r"
+assert f is alias is incoming
+assert key[incoming] == 'retained'
+assert async_f is not f
+assert async_f.__doc__ == 'Async documentation.'
+assert alias.__doc__ == incoming.__doc__
+f
+",
+                vec![
+                    (
+                        "incoming".to_owned(),
+                        MontyObject::function("search", doc.map(str::to_owned)),
+                    ),
+                    (
+                        "async_f".to_owned(),
+                        MontyObject::async_function("search", Some("Async documentation.".to_owned())),
+                    ),
+                ],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+        assert_eq!(result, MontyObject::function("search", doc.map(str::to_owned)));
+    }
+}
+
+/// Lookup replies and callback results use the same metadata conversion as inputs.
+#[test]
+fn resolved_and_returned_host_functions_keep_docs() {
+    let runner = MontyRun::new(
+        "f = lookup\nassert f.__doc__ == 'From lookup.'\ng = f()\nassert g.__doc__ == 'From result.'\ng".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let lookup = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
+        .unwrap()
+        .into_name_lookup()
+        .unwrap();
+    let call = lookup
+        .resume(
+            NameLookupResult::Value(MontyObject::function("fetch", Some("From lookup.".to_owned()))),
+            PrintWriter::Disabled,
+        )
+        .unwrap()
+        .into_function_call()
+        .unwrap();
+    assert_eq!(call.function_name, "fetch");
+    let result = MontyObject::function("result", Some("From result.".to_owned()));
+    assert_eq!(
+        call.resume(result.clone(), PrintWriter::Disabled)
+            .unwrap()
+            .into_complete(),
+        Some(result)
+    );
+}
+
+/// Sandbox writes are rejected; reading metadata does not make it callable.
+#[test]
+fn host_function_metadata_is_read_only() {
+    let mut runner = MontyRun::new(
+        r#"
+for name in ['__doc__', '__name__']:
+    try:
+        setattr(f, name, ['replacement'])
+    except AttributeError:
+        pass
+    else:
+        assert False, 'expected read-only metadata'
+assert f.__name__ == 'search'
+assert f.__doc__ == 'Original.'
+for call in [lambda: f.__doc__([1]), lambda: f.__name__(value=[2])]:
+    try:
+        call()
+    except TypeError as exc:
+        assert str(exc) == "'str' object is not callable"
+    else:
+        assert False, 'expected non-callable metadata'
+try:
+    empty.__doc__([3])
+except TypeError as exc:
+    assert str(exc) == "'NoneType' object is not callable"
+else:
+    assert False, 'expected non-callable metadata'
+try:
+    f.missing([4])
+except AttributeError:
+    pass
+else:
+    assert False, 'expected missing attribute'
+assert getattr(f, 'missing', None) is None
+f
+"#
+        .to_owned(),
+        "test.py",
+        vec!["f".to_owned(), "empty".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let input = MontyObject::function("search", Some("Original.".to_owned()));
+    assert_eq!(
+        runner
+            .run_no_limits(vec![input.clone(), MontyObject::function("empty", None)])
+            .unwrap(),
+        input
+    );
+}
+
 /// Builds two `MontyObject::function` inputs with the same `__name__` ("foo")
 /// and runs `code` against them as inputs `a` and `b`.
 fn run_with_same_named_callable_inputs(code: &str) -> MontyObject {

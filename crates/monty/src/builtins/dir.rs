@@ -65,6 +65,9 @@ fn object_names(names: &mut Vec<Value>, object: &Value, vm: &VM<'_>) -> RunResul
                 add_static_names(names, &[StaticStrings::DunderDoc], vm)
             }
             HeapData::FunctionDefaults(_) | HeapData::Closure(_) => add_function_names(names, vm),
+            HeapData::ExtFunction(_) => {
+                add_static_names(names, &[StaticStrings::DunderDoc, StaticStrings::DunderName], vm)
+            }
             HeapData::BoundMethod(_) => add_static_names(names, &[StaticStrings::DunderDoc], vm),
             HeapData::Class(class) => add_keys(names, class.namespace(), vm),
             HeapData::Instance(instance) => {

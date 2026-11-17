@@ -283,7 +283,10 @@ fn unknown_signatures_and_eager_host_metadata() {
                 MontyObject::string("__doc__"),
                 MontyObject::string("Host tool collection."),
             ),
-            (MontyObject::string("run"), MontyObject::function("tools.run", None)),
+            (
+                MontyObject::string("run"),
+                MontyObject::function("tools.run", Some("Run the host tool.".to_owned())),
+            ),
         ],
     );
     let module = MontyObject::module(
@@ -296,7 +299,7 @@ fn unknown_signatures_and_eager_host_metadata() {
             ),
             (
                 MontyObject::string("fetch"),
-                MontyObject::async_function("tools.fetch", None),
+                MontyObject::async_function("tools.fetch", Some("Fetch results from the host.".to_owned())),
             ),
         ],
     );

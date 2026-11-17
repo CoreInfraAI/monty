@@ -56,6 +56,13 @@ subprocess pools, on for remote ones), that decides whether its calls start with
 suspends (see [asyncio.md](asyncio.md#calls-to-async-host-functions-raise-at-the-await)).
 A sync and an async host function sharing one name are two distinct proxies (`f is g` is `False`), each keeping its own behaviour.
 
+`__name__` is the proxy's lookup name, and `__doc__` is the docstring last supplied with a host conversion of that proxy.
+Both are read-only in the sandbox.
+Converting another function with the same name and async status replaces the documentation seen by all existing aliases;
+a missing docstring replaces it with `None`.
+Changing the host callable or its documentation alone does not refresh a retained proxy's documentation.
+The host must send the callable again, for example as a new input or lookup result.
+
 Non-callable values resolved through `external_lookup` are cached in the sandbox namespace.
 Later host-side changes to that entry are not observed by reads of the cached value.
 Only undefined names trigger lookup: an entry named `len`, for example, does not override the builtin.

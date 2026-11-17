@@ -509,7 +509,7 @@ impl GraphExporter {
                 let function = function.get(vm.heap);
                 MontyNode::Function {
                     name: function.as_str().to_owned(),
-                    docstring: None,
+                    docstring: function.docstring().map(str::to_owned),
                     is_async: function.is_async(),
                 }
             }
@@ -1111,7 +1111,21 @@ fn import_node(
             t.to_internal().try_into().expect("host types are static"),
         ))),
         MontyNode::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
-        MontyNode::Function { name, is_async, .. } => Ok(vm.heap.get_ext_function(&name, is_async)),
+        MontyNode::Function {
+            name,
+            docstring,
+            is_async,
+        } => {
+            let value = vm.heap.get_ext_function(&name, is_async);
+            let Value::Ref(id) = value else {
+                unreachable!("external functions are heap objects");
+            };
+            let HeapReadOutput::ExtFunction(function) = vm.heap.read(id) else {
+                unreachable!("external function cache contains external functions");
+            };
+            function.get_mut(vm.heap).set_docstring(docstring);
+            Ok(value)
+        }
         MontyNode::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
         MontyNode::Cycle(_) => Err(InvalidInputError::invalid_type("'Cycle' is not a valid input value")),
     }

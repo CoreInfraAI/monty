@@ -113,6 +113,7 @@ fn describe(object: &Value, bound: bool, vm: &mut VM<'_>) -> RunResult<Descripti
             HeapData::ExtFunction(function) => {
                 description.kind = "external function";
                 function.as_str().clone_into(&mut description.name);
+                description.doc = function.docstring().map(str::to_owned);
                 description.is_async = function.is_async();
             }
             HeapData::Module(module) => {

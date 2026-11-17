@@ -11,6 +11,7 @@ Tools
 Members:
     run
         Signature unavailable.
+        Run the host tool.
 Help on module tools:
 
 tools
@@ -19,10 +20,12 @@ tools
 Members:
     async fetch
         Signature unavailable.
+        Fetch results from the host.
 Help on external function tools.fetch:
 
 async tools.fetch
     Signature unavailable.
+    Fetch results from the host.
 Help on built-in function len:
 
 len

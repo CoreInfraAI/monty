@@ -40,8 +40,9 @@ These raise `NameError`:
 - Object inventories cover modules, user functions, bound methods, user classes and instances, and host classes and
     instances.
     They omit CPython attributes Monty does not expose, including inherited `object` methods.
+    Host functions list only `__doc__` and `__name__`.
     Other runtime objects and builtin types currently return an empty list, including lists, strings, named tuples,
-    and builtin or host functions.
+    and builtin functions.
 - Custom `__dir__` methods and module hooks are ignored.
 - Host-backed objects list only attributes already sent by the host or stored in the sandbox, including known class
     attributes.
@@ -56,7 +57,6 @@ These raise `NameError`:
     user function or bound user method.
     Annotations are omitted and are not evaluated.
     Callables without signature metadata, including builtin and host functions, display `Signature unavailable.`
-    Host function documentation is currently unavailable inside the sandbox.
 - Module and class help lists public members, plus `__init__` and `__call__`, one level deep.
     It ignores `__all__`, custom `__dir__` methods, and dynamic attributes.
     Builtin types have no member listing or documentation.
