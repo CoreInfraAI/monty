@@ -1,0 +1,8 @@
+---
+source: crates/monty/tests/help.rs
+expression: output
+---
+Help on async method run:
+
+async run(value=[1, 2], *, mode='fast')
+    Updated after restore.

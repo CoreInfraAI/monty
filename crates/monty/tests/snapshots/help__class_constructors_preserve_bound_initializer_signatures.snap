@@ -1,0 +1,24 @@
+---
+source: crates/monty/tests/help.rs
+expression: output
+---
+Help on method setup:
+
+setup(value=1, /, *, flag=True)
+    Configure the owner.
+Help on class Tool:
+
+Tool(value=1, /, *, flag=True)
+
+Members:
+    __init__(value=1, /, *, flag=True)
+        Configure the owner.
+Help on method keyword_only:
+
+keyword_only(*, limit=2)
+Help on class KeywordTool:
+
+KeywordTool(*, limit=2)
+
+Members:
+    __init__(*, limit=2)

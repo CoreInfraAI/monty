@@ -1,0 +1,24 @@
+---
+source: crates/monty/tests/help.rs
+expression: "errors.join(\"\\n\")"
+---
+Traceback (most recent call last):
+  File "help.py", line 1, in <module>
+    help()
+    ~~~~~~
+TypeError: help() takes exactly one argument (0 given)
+Traceback (most recent call last):
+  File "help.py", line 1, in <module>
+    help(len, int)
+    ~~~~~~~~~~~~~~
+TypeError: help() takes exactly one argument (2 given)
+Traceback (most recent call last):
+  File "help.py", line 1, in <module>
+    help(object=len)
+    ~~~~~~~~~~~~~~~~
+TypeError: help() takes no keyword arguments
+Traceback (most recent call last):
+  File "help.py", line 1, in <module>
+    help('topics')
+    ~~~~~~~~~~~~~~
+NotImplementedError: help() string topics are not supported

@@ -15,18 +15,19 @@
 //! change both; coverage lives in `test_cases/function__arity_defaults.py`
 //! and `test_cases/args__macro_errors.py`.
 
-use std::cell::OnceCell;
+use std::{cell::OnceCell, mem};
 
 use crate::{
     args::{ArgPosIter, ArgValues},
     bytecode::VM,
-    defer_drop_mut,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     expressions::Identifier,
     heap::{DropGuard, DropWithContext, HeapData},
     intern::{Interns, StringId},
     resource_checks::check_estimated_size,
-    types::{Dict, allocate_tuple},
+    string_builder::StringBuilder,
+    types::{Dict, PyTrait, allocate_tuple},
     value::{VALUE_SIZE, Value},
 };
 
@@ -142,6 +143,58 @@ enum BindMode {
 }
 
 impl Signature {
+    /// Formats evaluated defaults and parameter kinds, omitting a bound method's receiver.
+    /// `None` means the method has no positional slot in which to bind its receiver.
+    pub(crate) fn format(&self, defaults: &[Value], bound: bool, vm: &mut VM<'_>) -> RunResult<Option<String>> {
+        let pos_count = self.pos_arg_count();
+        let arg_count = self.arg_count();
+        if bound && pos_count + arg_count == 0 && self.var_args.is_none() {
+            return Ok(None);
+        }
+        let interns = vm.interns;
+        let mut output = "(".to_owned();
+        for (index, &name) in self.pos_args.iter().flatten().enumerate() {
+            if bound && index == 0 {
+                continue;
+            }
+            let default = index
+                .checked_sub(pos_count - self.pos_defaults_count)
+                .map(|index| &defaults[index]);
+            signature_part(&mut output, "", interns.get_str(name), default, vm)?;
+        }
+        if pos_count > usize::from(bound) {
+            signature_part(&mut output, "", "/", None, vm)?;
+        }
+        for (index, &name) in self.args.iter().flatten().enumerate() {
+            if bound && pos_count == 0 && index == 0 {
+                continue;
+            }
+            let default = index
+                .checked_sub(arg_count - self.arg_defaults_count)
+                .map(|index| &defaults[self.pos_defaults_count + index]);
+            signature_part(&mut output, "", interns.get_str(name), default, vm)?;
+        }
+        if let Some(name) = self.var_args {
+            signature_part(&mut output, "*", interns.get_str(name), None, vm)?;
+        } else if self.kwarg_count() > 0 {
+            signature_part(&mut output, "", "*", None, vm)?;
+        }
+        for (index, &name) in self.kwargs.iter().flatten().enumerate() {
+            let default = self
+                .kwarg_default_map
+                .as_ref()
+                .and_then(|map| map[index])
+                .map(|index| &defaults[self.pos_defaults_count + self.arg_defaults_count + index]);
+            signature_part(&mut output, "", interns.get_str(name), default, vm)?;
+        }
+        if let Some(name) = self.var_kwargs {
+            signature_part(&mut output, "**", interns.get_str(name), None, vm)?;
+        }
+        let mut builder = StringBuilder::from_existing(output, &vm.heap.tracker);
+        builder.push(')')?;
+        builder.finish_raw().map(Some)
+    }
+
     /// Returns the parameter count when positional arguments need no binding.
     ///
     /// With no defaults, variadic slots, or keyword-only parameters, positional
@@ -686,4 +739,30 @@ impl Signature {
         // points at the call, as CPython's does, not at the `def`.
         Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
     }
+}
+
+/// Default repr can run Python, so release the builder's tracker borrow before calling it.
+fn signature_part(
+    output: &mut String,
+    prefix: &str,
+    name: &str,
+    default: Option<&Value>,
+    vm: &mut VM<'_>,
+) -> RunResult<()> {
+    vm.heap.tracker.check_time()?;
+    let repr = default.map(|value| value.py_repr(vm)).transpose()?;
+    defer_drop!(repr, vm);
+    let separator = output.len() > 1;
+    let mut builder = StringBuilder::from_existing(mem::take(output), &vm.heap.tracker);
+    if separator {
+        builder.push_str(", ")?;
+    }
+    builder.push_str(prefix)?;
+    builder.push_str(name)?;
+    if let Some(repr) = repr {
+        builder.push('=')?;
+        builder.push_str(repr.as_str(vm).expect("repr returns a string"))?;
+    }
+    *output = builder.finish_raw()?;
+    Ok(())
 }

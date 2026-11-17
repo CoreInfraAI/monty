@@ -1,0 +1,55 @@
+---
+source: crates/monty/tests/help.rs
+expression: output
+---
+Help on module os:
+
+os
+
+Members:
+    altsep
+    chdir
+        Signature unavailable.
+    curdir
+    defpath
+    devnull
+    environ
+    extsep
+    fspath
+        Signature unavailable.
+    getcwd
+        Signature unavailable.
+    getcwdb
+        Signature unavailable.
+    getenv
+        Signature unavailable.
+    linesep
+    listdir
+        Signature unavailable.
+    makedirs
+        Signature unavailable.
+    mkdir
+        Signature unavailable.
+    name
+    pardir
+    path
+    pathsep
+    remove
+        Signature unavailable.
+    rename
+        Signature unavailable.
+    replace
+        Signature unavailable.
+    rmdir
+        Signature unavailable.
+    scandir
+        Signature unavailable.
+    sep
+    stat
+        Signature unavailable.
+    unlink
+        Signature unavailable.
+    urandom
+        Signature unavailable.
+    walk
+        Signature unavailable.

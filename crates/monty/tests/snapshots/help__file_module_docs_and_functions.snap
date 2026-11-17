@@ -1,0 +1,24 @@
+---
+source: crates/monty/tests/help.rs
+expression: output
+---
+Help on module tools:
+
+tools
+    Tools from a Python file.
+
+Members:
+    alias(query, /, *, limit=2)
+        Search for a query.
+    run(query, /, *, limit=2)
+        Search for a query.
+Help on module tools:
+
+tools
+    Updated module.
+
+Members:
+    alias(query, /, *, limit=2)
+        Search for a query.
+    run(query, /, *, limit=2)
+        Search for a query.

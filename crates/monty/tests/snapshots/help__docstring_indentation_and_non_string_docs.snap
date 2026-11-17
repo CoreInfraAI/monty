@@ -1,0 +1,32 @@
+---
+source: crates/monty/tests/help.rs
+expression: "capture(r#\"\ndef tool():\n    pass\ntool.__doc__ = '\\n\\tSummary.\\n\\n\\tExample:\\n\\t    tool()\\n\\t\\n'\nhelp(tool)\ntool.__doc__ = 'Résumé.\\n\\u2003\\u2003Indented.\\n\\u2003\\u2003  More.'\nhelp(tool)\ntool.__doc__ = '    First line.\\n        Second line.\\n            Nested.'\nhelp(tool)\ntool.__doc__ = None\nhelp(tool)\ntool.__doc__ = ['not a docstring']\nhelp(tool)\ntool.__doc__ = tool\nhelp(tool)\n\"#)"
+---
+Help on function tool:
+
+tool()
+    Summary.
+
+    Example:
+        tool()
+Help on function tool:
+
+tool()
+    Résumé.
+    Indented.
+      More.
+Help on function tool:
+
+tool()
+    First line.
+    Second line.
+        Nested.
+Help on function tool:
+
+tool()
+Help on function tool:
+
+tool()
+Help on function tool:
+
+tool()

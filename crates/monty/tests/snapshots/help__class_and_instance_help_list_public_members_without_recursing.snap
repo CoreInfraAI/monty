@@ -1,0 +1,37 @@
+---
+source: crates/monty/tests/help.rs
+expression: "capture(r#\"\nclass Tool:\n    \"\"\"A documented tool.\"\"\"\n    version = 2\n    _private = 3\n    annotation: MissingType\n    def __init__(self, name, *, retries=2):\n        \"\"\"Configure the tool.\"\"\"\n    def __call__(self, query):\n        \"\"\"Run a query.\"\"\"\n    async def fetch(self, query, *, limit=5):\n        \"\"\"Fetch results.\"\"\"\n    def _hidden(self):\n        pass\nTool.again = Tool\nhelp(Tool)\nhelp(Tool('search'))\nclass Empty:\n    pass\nhelp(Empty)\n\"#)"
+---
+Help on class Tool:
+
+Tool(name, *, retries=2)
+    A documented tool.
+
+Members:
+    __call__(self, query)
+        Run a query.
+    __init__(self, name, *, retries=2)
+        Configure the tool.
+    again(name, *, retries=2)
+        A documented tool.
+    async fetch(self, query, *, limit=5)
+        Fetch results.
+    version
+Help on class Tool:
+
+Tool(name, *, retries=2)
+    A documented tool.
+
+Members:
+    __call__(self, query)
+        Run a query.
+    __init__(self, name, *, retries=2)
+        Configure the tool.
+    again(name, *, retries=2)
+        A documented tool.
+    async fetch(self, query, *, limit=5)
+        Fetch results.
+    version
+Help on class Empty:
+
+Empty()

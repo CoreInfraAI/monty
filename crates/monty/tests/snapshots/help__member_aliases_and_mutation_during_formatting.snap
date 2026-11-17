@@ -1,0 +1,16 @@
+---
+source: crates/monty/tests/help.rs
+expression: "capture(r#\"\nclass Tools:\n    \"\"\"Tools available to this session.\"\"\"\ntools = Tools\nclass Default:\n    def __repr__(self):\n        tools.changed = 1\n        tools.z_tool = None\n        return '<default>'\ndef tool(value=Default(), *, mode='fast'):\n    \"\"\"Run this tool.\"\"\"\ntools.a_tool = tool\ntools.z_tool = tool\ntools._private = tool\ntools.again = tools\nhelp(tools)\n\"#)"
+---
+Help on class Tools:
+
+Tools()
+    Tools available to this session.
+
+Members:
+    a_tool(value=<default>, *, mode='fast')
+        Run this tool.
+    again()
+        Tools available to this session.
+    z_tool(value=<default>, *, mode='fast')
+        Run this tool.

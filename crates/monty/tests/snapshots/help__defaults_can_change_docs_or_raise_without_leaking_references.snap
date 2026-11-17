@@ -1,0 +1,16 @@
+---
+source: crates/monty/tests/help.rs
+expression: "capture(r#\"\nclass Default:\n    def __repr__(self):\n        tool.__doc__ = 'Changed while formatting.'\n        return '<default>'\ndef tool(value=Default()):\n    \"\"\"Before formatting.\"\"\"\nhelp(tool)\nhelp(tool)\nclass Broken:\n    def __repr__(self):\n        raise ValueError('cannot represent default')\ndef broken(value=Broken()):\n    pass\ntry:\n    help(broken)\nexcept ValueError as exc:\n    assert str(exc) == 'cannot represent default'\nelse:\n    assert False, 'expected a repr error'\nhelp(tool)\n\"#)"
+---
+Help on function tool:
+
+tool(value=<default>)
+    Before formatting.
+Help on function tool:
+
+tool(value=<default>)
+    Changed while formatting.
+Help on function tool:
+
+tool(value=<default>)
+    Changed while formatting.

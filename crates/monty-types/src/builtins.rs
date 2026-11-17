@@ -60,7 +60,7 @@ pub enum BuiltinsFunctions {
     // Globals,
     Hasattr,
     Hash,
-    // Help,
+    // Help - appended below
     Hex,
     Id,
     // Input,
@@ -121,4 +121,6 @@ pub enum BuiltinsFunctions {
     Locals,
     /// `dir([object])`, appended to preserve existing bytecode operands.
     Dir,
+    /// Non-interactive `help(object)`, appended to preserve existing bytecode operands.
+    Help,
 }

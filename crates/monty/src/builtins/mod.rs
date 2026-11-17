@@ -17,6 +17,7 @@ mod format;
 mod getattr;
 mod hasattr;
 mod hash;
+mod help;
 mod hex;
 mod id;
 pub(crate) mod isinstance;
@@ -154,6 +155,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Getattr => return getattr::builtin_getattr(vm, args),
             Self::Hasattr => return hasattr::builtin_hasattr(vm, args),
             Self::Hash => hash::builtin_hash(vm, args),
+            Self::Help => help::builtin_help(vm, args),
             Self::Hex => hex::builtin_hex(vm, args),
             Self::Id => id::builtin_id(vm, args),
             Self::Isinstance => isinstance::builtin_isinstance(vm, args),

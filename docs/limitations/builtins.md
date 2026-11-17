@@ -7,7 +7,7 @@ Python.
 ## Implemented builtin functions
 
 `abs`, `all`, `any`, `bin`, `chr`, `dir`, `divmod`, `enumerate`, `eval`, `exec`, `filter`,
-`format`, `getattr`, `hasattr`, `hash`, `hex`, `id`, `isinstance`, `iter`, `len`,
+`format`, `getattr`, `hasattr`, `hash`, `help`, `hex`, `id`, `isinstance`, `iter`, `len`,
 `locals`, `map`, `max`, `min`, `next`, `oct`, `open`, `ord`, `pow`, `print`, `repr`,
 `reversed`, `round`, `setattr`, `sorted`, `sum`, `type`, `zip`.
 `eval`, `exec` and `locals` are described in [eval_exec.md](eval_exec.md).
@@ -24,7 +24,7 @@ These raise `NameError`:
 
 - **Code objects and imports**: `compile`, `__import__`.
 - **Namespace introspection**: `globals`, `vars`.
-- **Interactive**: `input`, `breakpoint`, `help`.
+- **Interactive**: `input`, `breakpoint`.
 - **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`,
     `super`. (`@property` on functions is not recognized; use a method.)
 - **Construction / coercion**: `bytearray`, `memoryview`, `object`, `ascii`.
@@ -46,6 +46,24 @@ These raise `NameError`:
 - Host-backed objects list only attributes already sent by the host or stored in the sandbox, including known class
     attributes.
     Lazy host attributes whose names have not been supplied cannot be discovered.
+
+## help()
+
+- `help(obj)` prints compact plain text; its layout differs from CPython's `pydoc` output.
+    It requires one positional object: interactive `help()` and keyword arguments raise `TypeError`, and string
+    topics such as `help('modules')` raise `NotImplementedError`.
+- Signatures are available for user functions, bound user methods, and user class constructors whose `__init__` is a
+    user function or bound user method.
+    Annotations are omitted and are not evaluated.
+    Callables without signature metadata, including builtin and host functions, display `Signature unavailable.`
+    Host function documentation is currently unavailable inside the sandbox.
+- Module and class help lists public members, plus `__init__` and `__call__`, one level deep.
+    It ignores `__all__`, custom `__dir__` methods, and dynamic attributes.
+    Builtin types have no member listing or documentation.
+    Host classes list only attributes already supplied on the class.
+- Default values use `repr()`, which can run user code; an error from a default's `__repr__` propagates from `help`.
+    Documentation and member values are captured before formatting their defaults, so changes made during formatting
+    may appear only on a subsequent call.
 
 ## Behavioural divergences
 

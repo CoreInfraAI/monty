@@ -46,6 +46,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - Runtime generic aliases (`list[int]`) and `|` unions (`int | None`), see [typing.md](typing.md)
 - `dir()` for scope names and `dir(obj)` for modules, user functions, classes and instances, with a
     [partial attribute inventory](builtins.md#dir)
+- Non-interactive [`help(obj)`](builtins.md#help), with stored documentation and user-function signatures
 
 **Rejected at parse time**, with `NotImplementedError` before any code runs:
 

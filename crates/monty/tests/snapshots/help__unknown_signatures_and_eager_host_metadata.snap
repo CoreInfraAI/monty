@@ -1,0 +1,36 @@
+---
+source: crates/monty/tests/help.rs
+expression: "capture_inputs(\"help(Tools)\\nhelp(module)\\nhelp(module.fetch)\\nhelp(len)\\nhelp(int)\\nhelp(None)\",\nvec![\"Tools\".to_owned(), \"module\".to_owned()], vec![class, module],)"
+---
+Help on class Tools:
+
+Tools
+    Signature unavailable.
+    Host tool collection.
+
+Members:
+    run
+        Signature unavailable.
+Help on module tools:
+
+tools
+    Host module documentation.
+
+Members:
+    async fetch
+        Signature unavailable.
+Help on external function tools.fetch:
+
+async tools.fetch
+    Signature unavailable.
+Help on built-in function len:
+
+len
+    Signature unavailable.
+Help on built-in class int:
+
+int
+    Signature unavailable.
+Help on object NoneType:
+
+NoneType

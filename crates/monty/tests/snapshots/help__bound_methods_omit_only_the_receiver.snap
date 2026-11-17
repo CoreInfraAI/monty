@@ -1,0 +1,28 @@
+---
+source: crates/monty/tests/help.rs
+expression: "capture(r#\"\nclass Tool:\n    def positional(self, value=1, /, *, mode='read'):\n        \"\"\"Original.\"\"\"\n    def sole(self, /, value=2):\n        pass\n    def ordinary(self, value=3):\n        pass\n    def variadic(*args, **kwargs):\n        pass\n    def empty():\n        pass\n    async def fetch(self, *, limit=4):\n        pass\ntool = Tool()\nmethod = tool.positional\nTool.positional.__doc__ = 'Updated bound documentation.'\nhelp(method)\nhelp(Tool.positional)\nhelp(tool.sole)\nhelp(tool.ordinary)\nhelp(tool.variadic)\nhelp(tool.empty)\nhelp(tool.fetch)\n\"#)"
+---
+Help on method positional:
+
+positional(value=1, /, *, mode='read')
+    Updated bound documentation.
+Help on function positional:
+
+positional(self, value=1, /, *, mode='read')
+    Updated bound documentation.
+Help on method sole:
+
+sole(value=2)
+Help on method ordinary:
+
+ordinary(value=3)
+Help on method variadic:
+
+variadic(*args, **kwargs)
+Help on method empty:
+
+empty
+    Signature unavailable.
+Help on async method fetch:
+
+async fetch(*, limit=4)

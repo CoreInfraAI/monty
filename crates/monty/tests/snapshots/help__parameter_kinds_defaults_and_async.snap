@@ -1,0 +1,21 @@
+---
+source: crates/monty/tests/help.rs
+expression: "capture(r#\"\ndefault = [1]\ndef all_kinds(a, b=2, /, c=3, *items, required, optional='value', another, **options):\n    \"\"\"Call the tool.\"\"\"\ndef defaults(a=default, /, b=None, *, flag=True):\n    pass\ndefault.append(2)\ndefault = 'rebound'\nasync def async_tool(query: MissingType, *, limit=10) -> AnotherMissingType:\n    \"\"\"Fetch results.\"\"\"\ndef keyword_only(*, required, optional=4, last):\n    pass\nassert help(all_kinds) is None\nhelp(defaults)\nhelp(async_tool)\nhelp(keyword_only)\nhelp(lambda x=5, **kwargs: x)\n\"#)"
+---
+Help on function all_kinds:
+
+all_kinds(a, b=2, /, c=3, *items, required, optional='value', another, **options)
+    Call the tool.
+Help on function defaults:
+
+defaults(a=[1, 2], /, b=None, *, flag=True)
+Help on async function async_tool:
+
+async async_tool(query, *, limit=10)
+    Fetch results.
+Help on function keyword_only:
+
+keyword_only(*, required, optional=4, last)
+Help on function <lambda>:
+
+<lambda>(x=5, **kwargs)

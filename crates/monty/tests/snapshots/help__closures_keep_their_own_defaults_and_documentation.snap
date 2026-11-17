@@ -1,0 +1,12 @@
+---
+source: crates/monty/tests/help.rs
+expression: "capture(r#\"\ndef factory(value):\n    def tool(a=value, *, b=value + 1):\n        \"\"\"Original.\"\"\"\n        return value\n    return tool\nfirst = factory(2)\nsecond = factory(20)\nalias = first\nfirst.__doc__ = 'Updated through an alias.'\nhelp(alias)\nhelp(second)\n\"#)"
+---
+Help on function tool:
+
+tool(a=2, *, b=3)
+    Updated through an alias.
+Help on function tool:
+
+tool(a=20, *, b=21)
+    Original.
